@@ -1,0 +1,87 @@
+# --- Scanner Worker Dockerfile ---
+# This container is a "fat" image, meaning it includes all the
+# security tools our orchestrator needs to run.
+
+FROM python:3.11-slim-bookworm
+
+# Set the working directory inside the container
+WORKDIR /app
+
+# Set environment variables for Python
+ENV PYTHONDONTWRITEBYTECODE 1
+ENV PYTHONUNBUFFERED 1
+
+# --- Install System Dependencies & Security Tools ---
+# We split the RUN command into logical, stable layers.
+
+# Step 1: Install base dependencies
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    curl \
+    gnupg \
+    lsb-release \
+    perl \
+    git \
+    openjdk-17-jre-headless \
+    unzip \
+    sqlmap
+
+# Step 2: Install Nikto
+RUN git clone https://github.com/sullo/nikto.git /opt/nikto && \
+    ln -s /opt/nikto/program/nikto.pl /usr/local/bin/nikto
+
+# Step 3: Install Docker CLI (for running ZAP)
+RUN curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg && \
+    echo \
+      "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/debian \
+      $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends docker-ce-cli
+
+# Step 4: Install Trivy
+RUN curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+
+# Step 5: Install OWASP Dependency-Check (More Robust)
+RUN export DC_VERSION="12.1.9" && \
+    echo "Downloading Dependency-Check v${DC_VERSION}..." && \
+    #
+    # --- THIS IS THE FIX ---
+    # Pointing to the new, correct GitHub repository URL
+    #
+    curl -f -L -S -o dependency-check.zip "https://github.com/dependency-check/DependencyCheck/releases/download/v${DC_VERSION}/dependency-check-${DC_VERSION}-release.zip" && \
+    \
+    echo "Verifying downloaded zip file..." && \
+    unzip -t dependency-check.zip && \
+    \
+    echo "Extracting..." && \
+    unzip dependency-check.zip -d /opt/ && \
+    \
+    rm dependency-check.zip && \
+    ln -s /opt/dependency-check/bin/dependency-check.sh /usr/local/bin/dependency-check
+
+
+# Step 6: Clean up
+RUN apt-get purge -y git unzip && \
+    apt-get autoremove -y && \
+    rm -rf /var/lib/apt/lists/*
+
+# --- Install Python Dependencies (including Checkov & Semgrep) ---
+COPY requirements.txt .
+RUN python -m venv /venv
+ENV PATH="/venv/bin:$PATH"
+RUN pip install --upgrade pip
+RUN pip install --no-cache-dir -r requirements.txt
+
+# --- Pre-populate the Dependency-Check NVD Database ---
+ARG NVD_API_KEY
+
+RUN dependency-check --updateonly --nvdApiKey $NVD_API_KEY 
+
+# --- Copy Application Source Code ---
+COPY ./config /app/config
+COPY ./app /app/app
+COPY ./scanner /app/scanner
+
+# --- Entrypoint ---
+# The command to run the Celery worker.
+CMD ["celery", "-A", "scanner.tasks.celery_app", "worker", "--loglevel=info"]

@@ -1,0 +1,46 @@
+--- Security & Secrets ---
+
+Ignore the environment file.
+.env
+*.env.local
+
+--- Scan & Log Data ---
+
+Ignore all scan results, reports, and logs.
+
+scan_results/
+*.log
+
+--- Python ---
+
+Ignore virtual environments
+
+.venv/
+venv/
+env/
+env/
+env/
+
+Ignore Python cache
+
+pycache/
+*.py[cod]
+*$py.class
+
+--- Node.js / Frontend ---
+
+Ignore dependencies
+
+node_modules/
+
+Ignore build output
+
+dist/
+build/
+.next/
+
+--- IDE & OS ---
+
+.DS_Store
+.vscode/
+.idea/

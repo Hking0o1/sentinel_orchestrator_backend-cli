@@ -1,0 +1,69 @@
+# This is the master file that defines and runs our entire multi-container application.
+version: '3.8'
+
+services:
+  # --- 1. NGINX Reverse Proxy (The "Gatehouse") ---
+  proxy:
+    build:
+      context: ./proxy
+      dockerfile: Dockerfile.proxy
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    networks:
+      - sentinel_net
+
+  # --- 2. FastAPI Backend API (The "Fortress") ---
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    env_file:
+      - .env
+    volumes:
+      - ./scan_results:/app/scan_results
+    depends_on:
+      - redis
+    networks:
+      - sentinel_net
+
+  # --- 3. Celery Scanner Worker (The "Engine") ---
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+      # --- FIX: This block passes the NVD_API_KEY into the build process ---
+      args:
+        NVD_API_KEY: ${NVD_API_KEY}
+      # ------------------------------------------------------------------
+    env_file:
+      - .env
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./scan_results:/app/scan_results
+      - "C:/Users/Lenovo/Desktop/scannable_projects:/app/projects_to_scan"
+    depends_on:
+      - backend
+      - redis
+    networks:
+      - sentinel_net
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # --- 4. Redis Cache & Message Broker ---
+  redis:
+    image: redis:7-alpine
+    networks:
+      - sentinel_net
+    volumes:
+      - redis_data:/data
+
+# --- Define Networks ---
+networks:
+  sentinel_net:
+    driver: bridge
+
+# --- Define Persistent Volumes ---
+volumes:
+  redis_data:

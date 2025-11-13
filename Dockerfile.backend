@@ -1,0 +1,58 @@
+# --- Stage 1: Build Stage ---
+# Use an official Python image as the base
+FROM python:3.11-slim-bookworm as builder
+
+# Set the working directory inside the container
+WORKDIR /app
+
+# Set environment variables
+ENV PYTHONDONTWRITEBYTECODE 1
+ENV PYTHONUNBUFFERED 1
+
+# Copy the dependency file
+COPY requirements.txt .
+
+# Install dependencies into a virtual environment
+RUN python -m venv /venv
+ENV PATH="/venv/bin:$PATH"
+
+# --- THE FIX IS HERE ---
+# Upgrade pip to the latest version, which has a much
+# faster dependency resolver and reduces backtracking.
+RUN pip install --upgrade pip
+# -----------------------
+
+RUN pip install --no-cache-dir -r requirements.txt
+
+# --- Stage 2: Final Stage ---
+# Use a minimal "slim" image for the final container
+FROM python:3.11-slim-bookworm
+
+# Set the working directory
+WORKDIR /app
+
+# Copy the virtual environment from the builder stage
+COPY --from=builder /venv /venv
+
+# Set the PATH to include the virtual environment's bin
+ENV PATH="/venv/bin:$PATH"
+
+# --- Correctly Copy Application Source Code ---
+# We copy each module our backend needs to run.
+
+# 1. Copy the config module
+COPY ./config /app/config
+
+# 2. Copy the entire 'app' module
+COPY ./app /app/app
+
+# 3. Copy the 'scanner' module (for tasks and models)
+COPY ./scanner /app/scanner
+
+# -----------------------------------------------
+
+# Expose the port the app runs on
+EXPOSE 8000
+
+# The command to run the application using Uvicorn
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
