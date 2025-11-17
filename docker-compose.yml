@@ -1,3 +1,4 @@
+# This is the master file that defines and runs our entire multi-container application.
 version: '3.8'
 
 services:
@@ -9,7 +10,7 @@ services:
     ports:
       - "80:80"
     depends_on:
-      - backend # Waits for the backend to be healthy
+      - backend
     networks:
       - sentinel_net
 
@@ -21,12 +22,13 @@ services:
     env_file:
       - .env
     volumes:
+      # Use a bind mount for scan results
       - ./scan_results:/app/scan_results
     depends_on:
-      db: # <-- NEW: Waits for the DB to be ready
+      db:
         condition: service_healthy
-      redis: # <-- Waits for Redis
-        condition: service_started
+      redis:
+        condition: service_healthy
     networks:
       - sentinel_net
 
@@ -42,20 +44,40 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./scan_results:/app/scan_results
+      # REPLACE this with the absolute path to your projects folder
       - "C:/Users/Lenovo/Desktop/scannable_projects:/app/projects_to_scan"
     depends_on:
-      backend: # <-- NEW: Waits for the backend to be ready
-        condition: service_started
-      db: # <-- NEW: Waits for the DB to be ready
-        condition: service_healthy
-      redis:
-        condition: service_started
+      - backend
+      - redis
     networks:
       - sentinel_net
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
-  # --- 4. Redis Cache & Message Broker ---
+  # --- 4. NEW: Celery Beat Scheduler (The "Heartbeat") ---
+  beat:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker # Use the same image as the worker
+    env_file:
+      - .env
+    volumes:
+      # Mount the scan results to store the beat schedule file
+      - ./scan_results:/app/scan_results
+    depends_on:
+      - backend
+      - redis
+    networks:
+      - sentinel_net
+    # This is the only difference: the command.
+    # It starts the 'beat' scheduler instead of a 'worker'.
+    # It will store its schedule file in our persistent volume.
+    command: >
+      sh -c "celery -A scanner.tasks.celery_app beat 
+             --loglevel=info 
+             --schedule=/app/scan_results/celerybeat-schedule"
+    
+  # --- 5. Redis Cache & Message Broker ---
   redis:
     image: redis:7-alpine
     healthcheck:
@@ -68,7 +90,7 @@ services:
     volumes:
       - redis_data:/data
 
-  # --- 5. NEW: PostgreSQL Database ---
+  # --- 6. PostgreSQL Database ---
   db:
     image: postgres:16-alpine
     environment:
@@ -84,8 +106,6 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-    # This port mapping is for *you* to connect to the DB
-    # from your laptop using a tool like DBeaver or pgAdmin
     ports:
       - "5432:5432"
 
@@ -97,5 +117,5 @@ networks:
 # --- Define Persistent Volumes ---
 volumes:
   redis_data:
-  postgres_data: # <-- NEW
+  postgres_data:
   # scan_results is now a bind mount

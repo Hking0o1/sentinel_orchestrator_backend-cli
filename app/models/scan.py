@@ -2,7 +2,7 @@ import pydantic
 from enum import Enum
 from datetime import datetime
 from typing import Optional, List
-from pydantic import ConfigDict
+from pydantic import ConfigDict, AnyUrl
 from pydantic.alias_generators import to_camel
 
 # --- Enums for categorical, controlled values ---
@@ -42,8 +42,9 @@ class ScanCreate(pydantic.BaseModel):
     This validates the incoming request from the API.
     """
     profile: ScanProfile
-    target_url: Optional[pydantic.AnyUrl] = None
+    target_url: Optional[AnyUrl] = None
     source_code_path: Optional[str] = None
+    auth_cookie: Optional[str] = None
 
     @pydantic.model_validator(mode='after')
     def validate_dependencies(self) -> 'ScanCreate':
@@ -68,7 +69,7 @@ class ScanJobStarted(pydantic.BaseModel):
     status: ScanStatus = ScanStatus.PENDING
     message: str = "Scan job successfully queued."
     profile: ScanProfile
-    target_url: Optional[pydantic.AnyUrl] = None
+    target_url: Optional[AnyUrl] = None
 
 class ScanFinding(pydantic.BaseModel):
     """
@@ -79,33 +80,40 @@ class ScanFinding(pydantic.BaseModel):
     tool: str
     details: str
     remediation: Optional[str] = None
-    location: Optional[str] = None # e.g., file path, URL, or component
+    location: Optional[str] = None
     
+    # --- FIX: Add from_attributes ---
     model_config = ConfigDict(
         alias_generator=to_camel,
-        populate_by_name=True
+        populate_by_name=True,
+        from_attributes=True
     )
+    # -------------------------------
 
 
 class ScanJob(pydantic.BaseModel):
     """
     Model representing a complete scan job, including its results.
-    This would be returned by the '/scans/{job_id}' endpoint.
+    This is a Pydantic model, not a DB model.
     """
     id: str
     status: ScanStatus
     profile: ScanProfile
-    target_url: Optional[pydantic.AnyUrl] = None
+    target_url: Optional[AnyUrl] = None
     source_code_path: Optional[str] = None
+    auth_cookie: Optional[str] = None
     created_at: datetime
     completed_at: Optional[datetime] = None
     highest_severity: ScanSeverity = ScanSeverity.INFO
     findings: List[ScanFinding] = []
     
+    # --- FIX: Add from_attributes ---
     model_config = ConfigDict(
         alias_generator=to_camel,
-        populate_by_name=True
+        populate_by_name=True,
+        from_attributes=True
     )
+    # -------------------------------
 
 class ScanJobSummary(pydantic.BaseModel):
     """
@@ -118,13 +126,14 @@ class ScanJobSummary(pydantic.BaseModel):
     highest_severity: ScanSeverity
     created_at: datetime
 
+    # --- FIX: Add from_attributes ---
     model_config = ConfigDict(
         alias_generator=to_camel,
-        populate_by_name=True
+        populate_by_name=True,
+        from_attributes=True
     )
+    # -------------------------------
 
-# --- NEW: Model for updating a scan job ---
-# This is the model that was missing.
 class ScanJobUpdate(pydantic.BaseModel):
     """
     Model used by the worker to send results back to the database.

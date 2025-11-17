@@ -1,4 +1,5 @@
-from passlib.context import CryptContext
+import pydantic
+import bcrypt  # <-- Import the new library
 from datetime import datetime, timedelta, timezone
 from jose import JWTError, jwt
 from fastapi import Depends, HTTPException, status
@@ -6,31 +7,39 @@ from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 from uuid import UUID
 
+# Import the 'settings' instance from our config module
 from config.settings import settings
 from app.models.user import User, TokenData
 from app.db.session import get_db_session
 from app.db import crud
 
-# --- Password Hashing (using passlib and bcrypt) ---
+# --- Password Hashing (using bcrypt directly) ---
 
-# 1. Create a CryptContext. This tells passlib which hashing algorithm to use.
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
-# 2. Re-usable OAuth2PasswordBearer scheme.
-#    'tokenUrl' points to our *login* endpoint.
+# Re-usable OAuth2PasswordBearer scheme.
+# 'tokenUrl' points to our *login* endpoint.
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/token")
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """
-    Verifies a plain-text password against a hashed password using passlib.
+    Verifies a plain-text password against a hashed password using bcrypt.
     """
-    return pwd_context.verify(plain_password, hashed_password)
+    # We must encode the strings to bytes for bcrypt
+    return bcrypt.checkpw(
+        plain_password.encode('utf-8'), 
+        hashed_password.encode('utf-8')
+    )
 
 def get_password_hash(password: str) -> str:
     """
-    Generates a secure bcrypt hash for a plain-text password using passlib.
+    Generates a secure bcrypt hash for a plain-text password.
     """
-    return pwd_context.hash(password)
+    # We must encode the password to bytes
+    hashed_bytes = bcrypt.hashpw(
+        password.encode('utf-8'), 
+        bcrypt.gensalt()
+    )
+    # Decode back to a string to store in our database
+    return hashed_bytes.decode('utf-8')
 
 
 # --- JSON Web Token (JWT) Management ---
@@ -38,13 +47,6 @@ def get_password_hash(password: str) -> str:
 def create_access_token(data: dict, expires_delta: timedelta | None = None) -> str:
     """
     Creates a new, signed JWT access token.
-    
-    Args:
-        data: The payload to encode (e.g., {'sub': str(user.id)}).
-        expires_delta: How long the token should be valid for.
-        
-    Returns:
-        A signed JWT string.
     """
     to_encode = data.copy()
     if expires_delta:
@@ -62,7 +64,33 @@ def create_access_token(data: dict, expires_delta: timedelta | None = None) -> s
     )
     return encoded_jwt
 
-# --- FastAPI Dependency (THE NEW DATABASE-DRIVEN VERSION) ---
+def decode_and_validate_token(token: str) -> TokenData:
+    """
+    Decodes a JWT, validates its signature and expiration, and returns the payload.
+    """
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    
+    try:
+        payload = jwt.decode(
+            token, 
+            settings.SECRET_KEY, 
+            algorithms=[settings.ALGORITHM]
+        )
+        email: str | None = payload.get("sub")
+        if email is None:
+            raise credentials_exception
+        token_data = TokenData(email=email)
+        
+    except JWTError:
+        raise credentials_exception
+    
+    return token_data
+
+# --- FastAPI Dependency ---
 
 async def get_current_user(
     token: str = Depends(oauth2_scheme),
@@ -76,8 +104,7 @@ async def get_current_user(
     """
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Could not validate credentials",
-        headers={"WWW-Authenticate": "Bearer"},
+        detail="Could not validate credentials, token may be invalid or user not found.",
     )
     
     try:

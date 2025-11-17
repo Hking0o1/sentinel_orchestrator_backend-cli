@@ -320,22 +320,28 @@ def run_nikto_scan(target_url: str, output_dir: str) -> Dict:
     return {'findings': findings, 'raw_report': ('DAST_Nikto', output)}
     
 def run_zap_scan(target_url: str, output_dir: str, auth_cookie: str | None) -> Dict:
-    # (No changes to this function)
     print("[ZAP] Starting ZAP scan...")
     if not is_tool_installed("docker"):
         return {'findings': [], 'raw_report': ('DAST_ZAP', 'Tool "docker" not found. ZAP scan requires Docker.')}
     abs_dir = os.path.abspath(output_dir)
     report_file = "zap_report.html"
     zap_image = "ghcr.io/zaproxy/zaproxy:stable"
+    
+    # --- THIS IS THE UPDATE FOR STEP 4 ---
+    # Base command
     command = (
         f"docker run --user 0 --rm -v \"{abs_dir}:/zap/wrk/:rw\" "
         f"{zap_image} zap-baseline.py -t {target_url} -r {report_file}"
     )
+    
+    # If an auth_cookie is provided, add the authentication header
     if auth_cookie:
         print("[ZAP] Running ZAP scan in AUTHENTICATED mode.")
-        command += f" -C {auth_cookie}"
+        command += f" -H \"Cookie: {auth_cookie}\""
     else:
         print("[ZAP] Running ZAP scan in UNAUTHENTICATED mode.")
+    # -------------------------------------
+
     _, output = run_command(command)
     findings = []
     if "FAIL-NEW" in output:
