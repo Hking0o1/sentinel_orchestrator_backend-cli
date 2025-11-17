@@ -2,10 +2,8 @@ import pydantic
 from enum import Enum
 from datetime import datetime
 from typing import Optional, List
-# --- FIX: Import ConfigDict and the to_camel utility ---
 from pydantic import ConfigDict
 from pydantic.alias_generators import to_camel
-# ----------------------------------------------------
 
 # --- Enums for categorical, controlled values ---
 
@@ -83,12 +81,10 @@ class ScanFinding(pydantic.BaseModel):
     remediation: Optional[str] = None
     location: Optional[str] = None # e.g., file path, URL, or component
     
-    # --- FIX: Use the Pydantic v2 ConfigDict syntax ---
     model_config = ConfigDict(
         alias_generator=to_camel,
         populate_by_name=True
     )
-    # --------------------------------------------------
 
 
 class ScanJob(pydantic.BaseModel):
@@ -106,12 +102,10 @@ class ScanJob(pydantic.BaseModel):
     highest_severity: ScanSeverity = ScanSeverity.INFO
     findings: List[ScanFinding] = []
     
-    # --- FIX: Use the Pydantic v2 ConfigDict syntax ---
     model_config = ConfigDict(
         alias_generator=to_camel,
         populate_by_name=True
     )
-    # --------------------------------------------------
 
 class ScanJobSummary(pydantic.BaseModel):
     """
@@ -124,8 +118,19 @@ class ScanJobSummary(pydantic.BaseModel):
     highest_severity: ScanSeverity
     created_at: datetime
 
-    # --- FIX: Use the Pydantic v2 ConfigDict syntax ---
     model_config = ConfigDict(
         alias_generator=to_camel,
         populate_by_name=True
     )
+
+# --- NEW: Model for updating a scan job ---
+# This is the model that was missing.
+class ScanJobUpdate(pydantic.BaseModel):
+    """
+    Model used by the worker to send results back to the database.
+    """
+    status: ScanStatus
+    findings: List[ScanFinding]
+    highest_severity: ScanSeverity
+    attack_path_analysis: Optional[str] = None
+    report_url: Optional[str] = None

@@ -1,4 +1,3 @@
-# This is the master file that defines and runs our entire multi-container application.
 version: '3.8'
 
 services:
@@ -10,7 +9,7 @@ services:
     ports:
       - "80:80"
     depends_on:
-      - backend
+      - backend # Waits for the backend to be healthy
     networks:
       - sentinel_net
 
@@ -24,7 +23,10 @@ services:
     volumes:
       - ./scan_results:/app/scan_results
     depends_on:
-      - redis
+      db: # <-- NEW: Waits for the DB to be ready
+        condition: service_healthy
+      redis: # <-- Waits for Redis
+        condition: service_started
     networks:
       - sentinel_net
 
@@ -33,10 +35,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.worker
-      # --- FIX: This block passes the NVD_API_KEY into the build process ---
       args:
         NVD_API_KEY: ${NVD_API_KEY}
-      # ------------------------------------------------------------------
     env_file:
       - .env
     volumes:
@@ -44,8 +44,12 @@ services:
       - ./scan_results:/app/scan_results
       - "C:/Users/Lenovo/Desktop/scannable_projects:/app/projects_to_scan"
     depends_on:
-      - backend
-      - redis
+      backend: # <-- NEW: Waits for the backend to be ready
+        condition: service_started
+      db: # <-- NEW: Waits for the DB to be ready
+        condition: service_healthy
+      redis:
+        condition: service_started
     networks:
       - sentinel_net
     extra_hosts:
@@ -54,10 +58,36 @@ services:
   # --- 4. Redis Cache & Message Broker ---
   redis:
     image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     networks:
       - sentinel_net
     volumes:
       - redis_data:/data
+
+  # --- 5. NEW: PostgreSQL Database ---
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - sentinel_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    # This port mapping is for *you* to connect to the DB
+    # from your laptop using a tool like DBeaver or pgAdmin
+    ports:
+      - "5432:5432"
 
 # --- Define Networks ---
 networks:
@@ -67,3 +97,5 @@ networks:
 # --- Define Persistent Volumes ---
 volumes:
   redis_data:
+  postgres_data: # <-- NEW
+  # scan_results is now a bind mount

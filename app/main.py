@@ -1,15 +1,63 @@
 from fastapi import FastAPI
+from contextlib import asynccontextmanager
 from app.api import api_router
 from config.settings import settings
+from app.db.session import engine, AsyncSessionLocal
+from app.db.base import Base
+from app.db import crud
+from app.models.user import UserCreate
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    Application lifespan manager. This is the new, recommended
+    way to handle startup and shutdown events in FastAPI.
+    """
+    print("FastAPI application is starting up...")
+    
+    # --- 1. Create database tables ---
+    async with engine.begin() as conn:
+        print("Initializing database tables...")
+        # This creates all tables that inherit from 'Base'
+        await conn.run_sync(Base.metadata.create_all)
+        print("Database tables initialized.")
+
+    # --- 2. Create default admin user ---
+    # This replaces our old simulation. It checks the DB
+    # and creates the admin *once* if they don't exist.
+    async with AsyncSessionLocal() as db:
+        print(f"Checking for admin user: {settings.FIRST_ADMIN_EMAIL}...")
+        admin_user = await crud.get_user_by_email(db, email=settings.FIRST_ADMIN_EMAIL)
+        if not admin_user:
+            print("Admin user not found, creating new admin...")
+            admin_in = UserCreate(
+                email=settings.FIRST_ADMIN_EMAIL,
+                password=settings.FIRST_ADMIN_PASSWORD,
+                full_name="Default Admin",
+                is_active=True,
+                is_admin=True
+            )
+            await crud.create_user(db, user_in=admin_in)
+            print("Default admin user created successfully.")
+        else:
+            print("Admin user already exists.")
+            
+    print("Startup complete.")
+    
+    yield # The application is now running
+    
+    # --- Shutdown ---
+    print("FastAPI application is shutting down...")
+    await engine.dispose() # Cleanly close the database connection pool
+    print("Shutdown complete.")
+
 
 # Create the main FastAPI application instance
 app = FastAPI(
     title="Project Sentinel - Security Orchestrator",
     description="The secure backend API for the Project Sentinel DevSecOps Platform.",
     version="1.0.0",
-    # In a production app, you'd disable the docs on the public internet:
-    # docs_url=None, 
-    # redoc_url=None,
+    lifespan=lifespan # Use the new lifespan context manager
 )
 
 # Include the main API router
@@ -28,34 +76,3 @@ async def root():
         "status": "ok", 
         "message": "Welcome to the Project Sentinel API"
     }
-
-# --- Real-App Event Handlers ---
-
-@app.on_event("startup")
-async def startup_event():
-    """
-    This code runs once, when the FastAPI application starts.
-    In a real app, this is where you would:
-    - Initialize your database connection pool.
-    - Connect to a cache (like Redis).
-    - etc.
-    """
-    print("FastAPI application is starting up...")
-    # Example: await connect_to_database()
-    # Example: await connect_to_redis()
-    print("Startup complete.")
-
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """
-    This code runs once, when the FastAPI application shuts down.
-    In a real app, this is where you would:
-    - Gracefully close database connections.
-    - Disconnect from the cache.
-    """
-    print("FastAPI application is shutting down...")
-    # Example: await close_database_connection()
-    # Example: await close_redis_connection()
-    print("Shutdown complete.")
-
