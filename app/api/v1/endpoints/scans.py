@@ -2,21 +2,25 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List
 from datetime import datetime, timedelta, timezone
+import pydantic
 
+# Import the models (from the models file, not defining them here!)
 from app.models.scan import (
     ScanCreate, 
     ScanJobStarted, 
     ScanJobSummary, 
-    ScanJob
+    ScanJob,
+    ScanFinding
 )
 from app.models.user import User
 from app.core.security import get_current_user
 from app.db.session import get_db_session
 from app.db import crud
 
-# --- Celery Task Import ---
+# Celery Imports
 from scanner.tasks import run_security_scan
-# ----------------------------
+from scanner.tasks import celery_app
+from celery.result import AsyncResult
 
 router = APIRouter()
 
@@ -28,10 +32,7 @@ async def start_a_scan(
 ):
     """
     Starts a new security scan.
-    This endpoint is protected, requires an ADMIN role,
-    dispatches a Celery job, AND creates a record in the database.
     """
-    
     if not current_user.is_admin:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -40,7 +41,7 @@ async def start_a_scan(
 
     print(f"[API] Admin user '{current_user.email}' requested a '{scan_in.profile}' scan.")
     
-    # 1. Dispatch the job to the Celery worker
+    # 1. Dispatch to Celery
     try:
         print(f"[API] Dispatching job to Celery worker...")
         task = run_security_scan.delay(
@@ -57,7 +58,7 @@ async def start_a_scan(
             detail=f"Failed to queue scan job. Is the 'worker' service running?"
         )
     
-    # 2. Create the initial ScanJob record in our database
+    # 2. Create DB Entry
     try:
         await crud.create_scan_job(
             db=db,
@@ -65,17 +66,14 @@ async def start_a_scan(
             scan_in=scan_in,
             owner_id=current_user.id
         )
-        print(f"[API] Job {job_id} saved to database with PENDING status.")
     except Exception as e:
-        # This is a problem: the job is queued but we couldn't save it.
-        # A real-world app would need a compensating transaction.
         print(f"[API ERROR] Failed to save job {job_id} to database: {e}")
+        # In production, you might want to revoke the celery task here
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Job was queued but failed to save to DB. Check logs."
+            detail="Job queued but database save failed."
         )
     
-    # 3. Return the confirmation to the user
     return ScanJobStarted(
         job_id=job_id,
         profile=scan_in.profile,
@@ -90,13 +88,8 @@ async def get_scan_history(
     limit: int = 100
 ):
     """
-    Gets the list of all past and running scans for the current user.
-    This endpoint is now 100% database-driven.
+    Gets the list of all past and running scans.
     """
-    
-    print(f"[API] User '{current_user.email}' requested scan history.")
-    
-    # --- REAL DATABASE LOOKUP ---
     scans = await crud.get_scan_history(
         db, 
         owner_id=current_user.id, 
@@ -104,7 +97,7 @@ async def get_scan_history(
         limit=limit
     )
     
-    # Convert SQLAlchemy models to Pydantic models for the response
+    # Convert DB models to Pydantic models
     return [
         ScanJobSummary(
             id=scan.id,
@@ -124,29 +117,27 @@ async def get_scan_report(
 ):
     """
     Gets the full, detailed report for a single scan.
-    This endpoint is now 100% database-driven.
     """
-    
-    print(f"[API] User '{current_user.email}' requested report for scan: {scan_id}")
-    
-    # --- REAL DATABASE LOOKUP ---
-    # Fetch the job from the database
+    # 1. Try DB first
     db_scan = await crud.get_scan_job(db, job_id=scan_id)
 
-    if db_scan is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Scan job {scan_id} not found."
-        )
-        
-    # Security Check: Ensure the user owns this scan
-    # (or is an admin)
-    if db_scan.owner_id != current_user.id and not current_user.is_admin:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You do not have permission to view this scan."
-        )
+    if db_scan:
+        # Security Check
+        if db_scan.owner_id != current_user.id and not current_user.is_admin:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You do not have permission to view this scan."
+            )
+        return db_scan
 
-    # Return the full ScanJob object from the database.
-    # FastAPI will automatically convert it using the response_model.
-    return db_scan
+    # 2. If not in DB (rare, maybe very recent), try Celery
+    task_result = AsyncResult(scan_id, app=celery_app)
+    if task_result and task_result.state != 'PENDING':
+        # We found it in Celery but not DB (maybe DB save failed or pending)
+        # For now, just 404 because we rely on DB for ownership check
+        pass
+
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail=f"Scan job {scan_id} not found."
+    )

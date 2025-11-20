@@ -1,8 +1,7 @@
-# This is the master file that defines and runs our entire multi-container application.
 version: '3.8'
 
 services:
-  # --- 1. NGINX Reverse Proxy (The "Gatehouse") ---
+  # ... (proxy, backend, worker, beat, redis remain exactly the same) ...
   proxy:
     build:
       context: ./proxy
@@ -14,7 +13,6 @@ services:
     networks:
       - sentinel_net
 
-  # --- 2. FastAPI Backend API (The "Fortress") ---
   backend:
     build:
       context: .
@@ -22,7 +20,6 @@ services:
     env_file:
       - .env
     volumes:
-      # Use a bind mount for scan results
       - ./scan_results:/app/scan_results
     depends_on:
       db:
@@ -32,7 +29,6 @@ services:
     networks:
       - sentinel_net
 
-  # --- 3. Celery Scanner Worker (The "Engine") ---
   worker:
     build:
       context: .
@@ -44,7 +40,6 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./scan_results:/app/scan_results
-      # REPLACE this with the absolute path to your projects folder
       - "C:/Users/Lenovo/Desktop/scannable_projects:/app/projects_to_scan"
     depends_on:
       - backend
@@ -54,30 +49,23 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
-  # --- 4. NEW: Celery Beat Scheduler (The "Heartbeat") ---
   beat:
     build:
       context: .
-      dockerfile: Dockerfile.worker # Use the same image as the worker
+      dockerfile: Dockerfile.worker
+      args:
+        NVD_API_KEY: ${NVD_API_KEY}
     env_file:
       - .env
     volumes:
-      # Mount the scan results to store the beat schedule file
       - ./scan_results:/app/scan_results
     depends_on:
       - backend
       - redis
     networks:
       - sentinel_net
-    # This is the only difference: the command.
-    # It starts the 'beat' scheduler instead of a 'worker'.
-    # It will store its schedule file in our persistent volume.
-    command: >
-      sh -c "celery -A scanner.tasks.celery_app beat 
-             --loglevel=info 
-             --schedule=/app/scan_results/celerybeat-schedule"
+    command: sh -c "celery -A scanner.tasks.celery_app beat --loglevel=info --schedule=/app/scan_results/celerybeat-schedule"
     
-  # --- 5. Redis Cache & Message Broker ---
   redis:
     image: redis:7-alpine
     healthcheck:
@@ -90,7 +78,6 @@ services:
     volumes:
       - redis_data:/data
 
-  # --- 6. PostgreSQL Database ---
   db:
     image: postgres:16-alpine
     environment:
@@ -109,13 +96,20 @@ services:
     ports:
       - "5432:5432"
 
-# --- Define Networks ---
+  # --- NEW: Log Viewer UI ---
+  dozzle:
+    image: amir20/dozzle:latest
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    ports:
+      - "8888:8080"
+    networks:
+      - sentinel_net
+
 networks:
   sentinel_net:
     driver: bridge
 
-# --- Define Persistent Volumes ---
 volumes:
   redis_data:
   postgres_data:
-  # scan_results is now a bind mount

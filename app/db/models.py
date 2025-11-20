@@ -1,145 +1,98 @@
-import pydantic
-from enum import Enum
-from datetime import datetime
-from typing import Optional, List
-from pydantic import ConfigDict, AnyUrl
-from pydantic.alias_generators import to_camel
+import uuid
+from sqlalchemy import (
+    Column, String, Boolean, DateTime, ForeignKey, Text
+)
+from sqlalchemy.dialects.postgresql import UUID, JSONB
+from sqlalchemy.orm import relationship
+from sqlalchemy.sql import func
 
-# --- Enums for categorical, controlled values ---
+from app.db.base import Base # Import our Base class from app/db/base.py
+from app.models.scan import ScanStatus, ScanProfile, ScanSeverity
 
-class ScanProfile(str, Enum):
+class User(Base):
     """
-    Defines the allowed scan profiles.
+    SQLAlchemy model for the 'users' table.
     """
-    DEVELOPER = "developer"
-    WEB = "web"
-    FULL = "full"
+    __tablename__ = "users"
 
-class ScanStatus(str, Enum):
-    """
-    Defines the lifecycle of a scan job.
-    """
-    PENDING = "PENDING"
-    RUNNING = "RUNNING"
-    COMPLETED = "COMPLETED"
-    FAILED = "FAILED"
-
-class ScanSeverity(str, Enum):
-    """
-    Defines the severity levels for vulnerabilities.
-    """
-    CRITICAL = "CRITICAL"
-    HIGH = "HIGH"
-    MEDIUM = "MEDIUM"
-    LOW = "LOW"
-    INFO = "INFO"
-
-# --- API Request Models (Data from Client) ---
-
-class ScanCreate(pydantic.BaseModel):
-    """
-    Model used when a user requests to start a new scan.
-    This validates the incoming request from the API.
-    """
-    profile: ScanProfile
-    target_url: Optional[AnyUrl] = None
-    source_code_path: Optional[str] = None
-    auth_cookie: Optional[str] = None
-
-    @pydantic.model_validator(mode='after')
-    def validate_dependencies(self) -> 'ScanCreate':
-        """
-        Ensures that the correct arguments are provided for the chosen profile.
-        """
-        if self.profile in [ScanProfile.WEB, ScanProfile.FULL] and not self.target_url:
-            raise ValueError("A valid 'target_url' is required for 'web' and 'full' profiles.")
-        
-        if self.profile in [ScanProfile.DEVELOPER, ScanProfile.FULL] and not self.source_code_path:
-            raise ValueError("A 'source_code_path' is required for 'developer' and 'full' profiles.")
-        
-        return self
-
-# --- API Response Models (Data to Client) ---
-
-class ScanJobStarted(pydantic.BaseModel):
-    """
-    Model for the response sent back immediately after a scan is queued.
-    """
-    job_id: str
-    status: ScanStatus = ScanStatus.PENDING
-    message: str = "Scan job successfully queued."
-    profile: ScanProfile
-    target_url: Optional[AnyUrl] = None
-
-class ScanFinding(pydantic.BaseModel):
-    """
-    Model representing a single vulnerability finding.
-    """
-    severity: ScanSeverity
-    title: str
-    tool: str
-    details: str
-    remediation: Optional[str] = None
-    location: Optional[str] = None
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    email = Column(String, unique=True, index=True, nullable=False)
+    full_name = Column(String, nullable=True)
+    hashed_password = Column(String, nullable=False)
+    is_active = Column(Boolean(), default=True)
+    is_admin = Column(Boolean(), default=False)
+    created_at = Column(
+        DateTime(timezone=True), 
+        server_default=func.now(),
+        nullable=False
+    )
     
-    # --- FIX: Add from_attributes ---
-    model_config = ConfigDict(
-        alias_generator=to_camel,
-        populate_by_name=True,
-        from_attributes=True
+    # Relationships
+    scans = relationship(
+        "ScanJob", 
+        back_populates="owner", 
+        cascade="all, delete-orphan"
     )
-    # -------------------------------
-
-
-class ScanJob(pydantic.BaseModel):
-    """
-    Model representing a complete scan job, including its results.
-    This is a Pydantic model, not a DB model.
-    """
-    id: str
-    status: ScanStatus
-    profile: ScanProfile
-    target_url: Optional[AnyUrl] = None
-    source_code_path: Optional[str] = None
-    auth_cookie: Optional[str] = None
-    created_at: datetime
-    completed_at: Optional[datetime] = None
-    highest_severity: ScanSeverity = ScanSeverity.INFO
-    findings: List[ScanFinding] = []
     
-    # --- FIX: Add from_attributes ---
-    model_config = ConfigDict(
-        alias_generator=to_camel,
-        populate_by_name=True,
-        from_attributes=True
+    schedules = relationship(
+        "ScanSchedule",
+        back_populates="owner",
+        cascade="all, delete-orphan"
     )
-    # -------------------------------
 
-class ScanJobSummary(pydantic.BaseModel):
+class ScanJob(Base):
     """
-    A lightweight model for listing multiple scans (e.g., in a dashboard table).
+    SQLAlchemy model for the 'scan_jobs' table.
     """
-    id: str
-    status: ScanStatus
-    profile: ScanProfile
-    target: str # A simple string combining URL or path
-    highest_severity: ScanSeverity
-    created_at: datetime
+    __tablename__ = "scan_jobs"
 
-    # --- FIX: Add from_attributes ---
-    model_config = ConfigDict(
-        alias_generator=to_camel,
-        populate_by_name=True,
-        from_attributes=True
+    id = Column(String(36), primary_key=True, index=True)
+    status = Column(String(50), nullable=False, default=ScanStatus.PENDING)
+    profile = Column(String(50), nullable=False)
+    target_url = Column(String, nullable=True)
+    source_code_path = Column(String, nullable=True)
+    auth_cookie = Column(Text, nullable=True)
+    highest_severity = Column(String(50), nullable=False, default=ScanSeverity.INFO)
+    findings = Column(JSONB, nullable=True, default=[])
+    report_url = Column(String, nullable=True)
+    attack_path_analysis = Column(Text, nullable=True)
+    created_at = Column(
+        DateTime(timezone=True), 
+        server_default=func.now(), 
+        nullable=False
     )
-    # -------------------------------
+    completed_at = Column(DateTime(timezone=True), nullable=True)
 
-class ScanJobUpdate(pydantic.BaseModel):
+    # Relationships
+    owner_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
+    owner = relationship("User", back_populates="scans")
+    
+    schedule_id = Column(UUID(as_uuid=True), ForeignKey("scan_schedules.id"), nullable=True)
+    schedule = relationship("ScanSchedule", back_populates="jobs")
+
+
+class ScanSchedule(Base):
     """
-    Model used by the worker to send results back to the database.
+    SQLAlchemy model for the 'scan_schedules' table.
     """
-    status: ScanStatus
-    findings: List[ScanFinding]
-    highest_severity: ScanSeverity
-    attack_path_analysis: Optional[str] = None
-    report_url: Optional[str] = None
+    __tablename__ = "scan_schedules"
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+    is_active = Column(Boolean(), default=True)
+    
+    # e.g., "0 2 * * 0"
+    crontab = Column(String(100), nullable=False) 
+    
+    # Scan Configuration
+    profile = Column(String(50), nullable=False)
+    target_url = Column(String, nullable=True)
+    source_code_path = Column(String, nullable=True)
+    auth_cookie = Column(Text, nullable=True)
+    
+    # Relationships
+    owner_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
+    owner = relationship("User", back_populates="schedules")
+    
+    jobs = relationship("ScanJob", back_populates="schedule")
