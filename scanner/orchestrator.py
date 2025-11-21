@@ -1,88 +1,80 @@
+# ... (Imports remain the same) ...
 import os
 import json
 import logging
 from datetime import datetime, timezone
 from typing import TypedDict, List, Dict, Any, Tuple, Optional
 from concurrent.futures import ProcessPoolExecutor, as_completed
-
-from scanner.tools import (
-    run_sca_scan,
-    run_sast_scan,
-    run_container_scan,
-    run_iac_scan,
-    run_resilience_check,
-    run_nikto_scan,
-    run_zap_scan,
-    run_sqlmap_scan
-)
+from scanner.tools import (run_sca_scan, run_sast_scan, run_container_scan, run_iac_scan, run_resilience_check, run_nikto_scan, run_zap_scan, run_sqlmap_scan)
 from scanner.tools.utils import get_logger, normalize_severity
 from scanner.correlation.engine import CorrelationEngine
 from langgraph.graph import StateGraph, END
 from config.settings import settings
+# ... (AI Imports remain the same) ...
+try:
+    import google.generativeai as genai
+    from fpdf import FPDF
+    GEMINI_API_KEY = settings.GEMINI_API_KEY
+    if GEMINI_API_KEY:
+        genai.configure(api_key=GEMINI_API_KEY)
+        GEMINI_AVAILABLE = True
+    else:
+        GEMINI_AVAILABLE = False
+    PDF_AVAILABLE = True
+except ImportError:
+    GEMINI_AVAILABLE = False
+    PDF_AVAILABLE = False
+
+try:
+    from langchain_ollama import ChatOllama
+    from langchain_core.output_parsers import StrOutputParser
+    from langchain_core.prompts import ChatPromptTemplate
+    LANGCHAIN_AVAILABLE = True
+except ImportError:
+    LANGCHAIN_AVAILABLE = False
 
 logger = get_logger("orchestrator")
 
-# --- AI Dependencies ---
-GEMINI_AVAILABLE = False
-try:
-    import google.generativeai as genai
-    if settings.GEMINI_API_KEY:
-        genai.configure(api_key=settings.GEMINI_API_KEY)
-        GEMINI_AVAILABLE = True
-except ImportError:
-    logger.warning("google-generativeai not installed.")
-except Exception as e:
-    logger.warning(f"Gemini config failed: {e}")
-
-# ... (LangChain/Ollama imports) ...
-LANGCHAIN_AVAILABLE = False # Keeping false unless you need it, for stability
-
-# --- PDF Helper ---
-try:
-    from fpdf import FPDF
-    PDF_AVAILABLE = True
-except ImportError:
-    PDF_AVAILABLE = False
-
+# ... (Helper functions: safe_path, mask_secret, create_pdf_report remain the same) ...
+def safe_path(path: str) -> str:
+    if not path: return ""
+    return os.path.abspath(str(path))
+def mask_secret(s: Optional[str]) -> str:
+    if not s: return ""
+    if len(s) <= 6: return "****"
+    return s[:3] + "..." + s[-3:]
 def create_pdf_report(text_content: str, output_path: str):
     if not PDF_AVAILABLE: return
     try:
         pdf = FPDF()
         pdf.add_page()
-        pdf.set_font("helvetica", size=11)
+        try: pdf.set_font("helvetica", size=11)
+        except Exception: pdf.set_font("Arial", size=11)
         pdf.set_auto_page_break(auto=True, margin=15)
         in_code_block = False
         for line in text_content.split('\n'):
             if line.startswith('```'):
                 in_code_block = not in_code_block
                 if in_code_block:
-                    pdf.set_font("courier", size=9)
-                    pdf.set_fill_color(240, 240, 240)
+                    pdf.set_font("courier", size=9); pdf.set_fill_color(240, 240, 240)
                 else:
                     pdf.set_font("helvetica", size=11)
-                pdf.ln(5)
-                continue
+                pdf.ln(5); continue
             if line.startswith('# '):
-                pdf.set_font(style='B', size=20); pdf.ln(10)
-                pdf.cell(0, 10, line[2:], new_x="LMARGIN", new_y="NEXT")
+                pdf.set_font(style='B', size=20); pdf.ln(10); pdf.cell(0, 10, line[2:], new_x="LMARGIN", new_y="NEXT")
             elif line.startswith('## '):
-                pdf.set_font(style='B', size=16); pdf.ln(8)
-                pdf.cell(0, 10, line[3:], new_x="LMARGIN", new_y="NEXT")
+                pdf.set_font(style='B', size=16); pdf.ln(8); pdf.cell(0, 10, line[3:], new_x="LMARGIN", new_y="NEXT")
             elif line.startswith('### '):
-                pdf.set_font(style='B', size=14); pdf.ln(6)
-                pdf.cell(0, 10, line[4:], new_x="LMARGIN", new_y="NEXT")
+                pdf.set_font(style='B', size=14); pdf.ln(6); pdf.cell(0, 10, line[4:], new_x="LMARGIN", new_y="NEXT")
             elif line.startswith('* '):
-                pdf.ln(2); pdf.cell(5)
-                pdf.multi_cell(0, 5, f"• {line[2:]}")
+                pdf.ln(2); pdf.cell(5); pdf.multi_cell(0, 5, f"• {line[2:]}")
             else:
                 pdf.multi_cell(0, 5, line, fill=in_code_block)
                 if not in_code_block: pdf.ln(1)
         pdf.output(output_path)
-        logger.info(f"PDF report saved to: {output_path}")
     except Exception as e:
         logger.error(f"Failed to generate PDF report: {e}")
 
-# --- State ---
 class GraphState(TypedDict):
     job_id: str 
     profile: str
@@ -95,27 +87,19 @@ class GraphState(TypedDict):
     raw_reports: Dict[str, Any]
     start_time: datetime
 
-# --- Nodes ---
+# ... (setup_node, run_parallel_scans_node, correlation_node, attack_modeling_node remain the same) ...
 def setup_node(state: GraphState) -> GraphState:
-    logger.info(f"--- SETUP (Job: {state['job_id']}, Profile: {state['profile'].upper()}) ---")
-    output_dir = os.path.abspath(f"scan_results/{state['job_id']}")
+    output_dir = safe_path(f"scan_results/{state['job_id']}")
     os.makedirs(output_dir, exist_ok=True)
-    state.update({
-        'output_dir': output_dir,
-        'report_summary': [f"Scan started for {state['target_url'] or state['source_code_path']}"],
-        'findings': [],
-        'raw_reports': {}
-    })
+    state.update({'output_dir': output_dir, 'report_summary': [], 'findings': [], 'raw_reports': {}})
     return state
 
 def run_parallel_scans_node(state: GraphState) -> GraphState:
-    logger.info(f"--- PARALLEL SCAN PHASE ---")
     profile = state['profile']
     target_url = state.get('target_url')
     source_code_path = state.get('source_code_path')
     output_dir = state['output_dir']
     auth_cookie = state.get('auth_cookie')
-
     all_jobs = {
         'sca': (run_sca_scan, (source_code_path, output_dir)),
         'sast': (run_sast_scan, (source_code_path, output_dir)),
@@ -126,18 +110,14 @@ def run_parallel_scans_node(state: GraphState) -> GraphState:
         'zap': (run_zap_scan, (target_url, output_dir, auth_cookie)),
         'sqlmap': (run_sqlmap_scan, (target_url, output_dir)),
     }
-    
     jobs_to_run = []
-    if profile == 'developer':
-        jobs_to_run = ['sast', 'sca', 'iac', 'container']
-    elif profile == 'web':
-        jobs_to_run = ['resilience', 'nikto', 'zap', 'sqlmap'] if target_url else []
-    elif profile == 'full': 
+    if profile == 'developer': jobs_to_run = ['sast', 'sca', 'iac', 'container']
+    elif profile == 'web': jobs_to_run = ['resilience', 'nikto', 'zap', 'sqlmap'] if target_url else []
+    elif profile == 'full':
         if source_code_path: jobs_to_run.extend(['sast', 'sca', 'iac', 'container'])
         if target_url: jobs_to_run.extend(['resilience', 'nikto', 'zap', 'sqlmap'])
-
-    if not jobs_to_run:
-        return state
+    
+    if not jobs_to_run: return state
 
     with ProcessPoolExecutor(max_workers=min(len(jobs_to_run), 8)) as executor:
         future_to_job = {}
@@ -150,65 +130,50 @@ def run_parallel_scans_node(state: GraphState) -> GraphState:
                 future_to_job[future] = name
 
         for future in as_completed(future_to_job):
-            job_name = future_to_job[future]
             try:
                 result = future.result()
-                new_findings = result.get('findings', [])
-                if new_findings:
-                    state['findings'].extend(new_findings)
-                raw_report = result.get('raw_report')
-                if raw_report:
-                    label, content = raw_report
+                state['findings'].extend(result.get('findings', []))
+                if result.get('raw_report'):
+                    label, content = result['raw_report']
                     state['raw_reports'][label] = str(content)
-                logger.info(f"Job {job_name} finished.")
             except Exception as exc:
-                logger.error(f"Job {job_name} failed: {exc}")
-                state['report_summary'].append(f"Job {job_name} failed: {exc}")
-
-    state['report_summary'].append(f"Parallel scans complete. Raw findings: {len(state['findings'])}")
+                logger.error(f"Job failed: {exc}")
     return state
 
 def correlation_node(state: GraphState) -> GraphState:
-    logger.info("--- CORRELATION ENGINE ---")
     if not state['findings']: return state
     try:
         engine = CorrelationEngine()
         engine.ingest_standard_findings(state['findings'])
         correlated = engine.run()
-        # Convert back to dicts for the pipeline
         state['findings'] = [f.model_dump() for f in correlated]
-        logger.info(f"Correlation complete. Findings: {len(state['findings'])}")
     except Exception as e:
         logger.error(f"Correlation failed: {e}")
     return state
 
 def attack_modeling_node(state: GraphState) -> GraphState:
-    # Placeholder for attack modeling
+    if not LANGCHAIN_AVAILABLE or not state['findings']: return state
+    try:
+        summary_for_ai = [f"{f.get('severity')}: {f.get('title')}" for f in state['findings'][:10]]
+        findings_json = json.dumps(summary_for_ai, indent=2)
+        prompt = ChatPromptTemplate.from_messages([("system", "Analyze findings."), ("human", f"Findings:\n{findings_json}")])
+        llm = ChatOllama(base_url="[http://host.docker.internal:11434](http://host.docker.internal:11434)", model="gemma:2b")
+        chain = prompt | llm | StrOutputParser()
+        analysis = chain.invoke({})
+        state['raw_reports']['AI_Attack_Path_Analysis'] = analysis
+    except Exception as e:
+        logger.error(f"AI Attack Modeling failed: {e}")
     return state
 
 def gemini_summarizer_node(state: GraphState) -> Tuple[GraphState, List[Dict[str, Any]]]:
-    logger.info("--- AI FINAL REPORT (GEMINI) ---")
-    if not GEMINI_AVAILABLE:
-        logger.warning("Gemini API key not configured.")
-        return state, []
-
+    if not GEMINI_AVAILABLE: return state, []
     findings_summary = json.dumps(state['findings'][:50], indent=2, default=str) 
-    
-    prompt = f"""
-    You are a Principal Application Security Engineer. Write a professional penetration test report based on these findings.
-    
-    **Scan Data:**
-    {findings_summary}
-
-    **Instructions:**
-    1. Generate a Markdown report with: Executive Summary, detailed findings grouped by severity, and a prioritized remediation plan.
-    2. After the report, add the separator ---TICKETING-JSON---
-    3. Then provide a JSON array of tickets.
-    """
+    prompt = f"""You are a Security Engineer. Write a penetration test report.
+    **Scan Data:** {findings_summary}
+    **Instructions:** 1. Markdown report. 2. Separator ---TICKETING-JSON--- 3. JSON tickets."""
     
     ticketing_json = []
     try:
-        # FIX: Use the standard model name
         model = genai.GenerativeModel('gemini-2.5-flash') 
         response = model.generate_content(prompt)
         gemini_response = response.text

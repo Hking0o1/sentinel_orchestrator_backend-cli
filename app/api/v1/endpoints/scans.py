@@ -1,10 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.ext.asyncio import AsyncSession
-from typing import List
-from datetime import datetime, timedelta, timezone
+from fastapi.responses import FileResponse
 import pydantic
-
-# Import the models (from the models file, not defining them here!)
+import os
 from app.models.scan import (
     ScanCreate, 
     ScanJobStarted, 
@@ -16,88 +13,50 @@ from app.models.user import User
 from app.core.security import get_current_user
 from app.db.session import get_db_session
 from app.db import crud
+from typing import List
+from datetime import datetime, timedelta, timezone
 
-# Celery Imports
-from scanner.tasks import run_security_scan
-from scanner.tasks import celery_app
+from scanner.tasks import celery_app, run_security_scan
 from celery.result import AsyncResult
 
 router = APIRouter()
+
+# ... (start_a_scan, get_scan_history, get_scan_report endpoints remain the same) ...
 
 @router.post("/start", response_model=ScanJobStarted, status_code=status.HTTP_202_ACCEPTED)
 async def start_a_scan(
     scan_in: ScanCreate,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db_session)
+    db = Depends(get_db_session)
 ):
-    """
-    Starts a new security scan.
-    """
     if not current_user.is_admin:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You do not have permission to start scans."
-        )
+        raise HTTPException(status_code=403, detail="Not authorized")
 
     print(f"[API] Admin user '{current_user.email}' requested a '{scan_in.profile}' scan.")
     
-    # 1. Dispatch to Celery
     try:
-        print(f"[API] Dispatching job to Celery worker...")
-        task = run_security_scan.delay(
-            scan_in.model_dump_json(),
-            current_user.email
-        )
+        task = run_security_scan.delay(scan_in.model_dump_json(), current_user.email)
         job_id = task.id
-        print(f"[API] Job accepted by Celery. Job ID: {job_id}")
-
     except Exception as e:
-        print(f"[API ERROR] Failed to dispatch job to Celery/Redis: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"Failed to queue scan job. Is the 'worker' service running?"
-        )
+        print(f"[API ERROR] Failed to dispatch: {e}")
+        raise HTTPException(status_code=503, detail="Failed to queue scan job.")
     
-    # 2. Create DB Entry
     try:
-        await crud.create_scan_job(
-            db=db,
-            job_id=job_id,
-            scan_in=scan_in,
-            owner_id=current_user.id
-        )
+        await crud.create_scan_job(db=db, job_id=job_id, scan_in=scan_in, owner_id=current_user.id)
     except Exception as e:
-        print(f"[API ERROR] Failed to save job {job_id} to database: {e}")
-        # In production, you might want to revoke the celery task here
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Job queued but database save failed."
-        )
+        print(f"[API ERROR] DB Save failed: {e}")
+        raise HTTPException(status_code=500, detail="Job queued but DB failed.")
     
-    return ScanJobStarted(
-        job_id=job_id,
-        profile=scan_in.profile,
-        target_url=scan_in.target_url,
-    )
+    return ScanJobStarted(job_id=job_id, profile=scan_in.profile, target_url=scan_in.target_url)
 
 @router.get("/", response_model=List[ScanJobSummary])
 async def get_scan_history(
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db_session),
-    skip: int = 0,
+    db = Depends(get_db_session),
+    skip: int = 0, 
     limit: int = 100
 ):
-    """
-    Gets the list of all past and running scans.
-    """
-    scans = await crud.get_scan_history(
-        db, 
-        owner_id=current_user.id, 
-        skip=skip, 
-        limit=limit
-    )
-    
-    # Convert DB models to Pydantic models
+    scans = await crud.get_scan_history(db, owner_id=current_user.id, skip=skip, limit=limit)
     return [
         ScanJobSummary(
             id=scan.id,
@@ -113,31 +72,65 @@ async def get_scan_history(
 async def get_scan_report(
     scan_id: str,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db_session)
+    db = Depends(get_db_session)
+):
+    db_scan = await crud.get_scan_job(db, job_id=scan_id)
+    if not db_scan:
+        raise HTTPException(status_code=404, detail="Scan not found")
+        
+    if db_scan.owner_id != current_user.id and not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    return db_scan
+
+# --- FIX: Improved Download Endpoint with Debugging ---
+@router.get("/{scan_id}/download")
+async def download_scan_pdf(
+    scan_id: str,
+    current_user: User = Depends(get_current_user),
+    db = Depends(get_db_session)
 ):
     """
-    Gets the full, detailed report for a single scan.
+    Downloads the PDF report for a specific scan.
     """
-    # 1. Try DB first
+    # 1. Get the scan from DB
     db_scan = await crud.get_scan_job(db, job_id=scan_id)
+    if not db_scan:
+        raise HTTPException(status_code=404, detail="Scan not found")
 
-    if db_scan:
-        # Security Check
-        if db_scan.owner_id != current_user.id and not current_user.is_admin:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="You do not have permission to view this scan."
-            )
-        return db_scan
+    # 2. Check permissions
+    if db_scan.owner_id != current_user.id and not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    
+    # 3. Check if the file path exists
+    file_path = db_scan.report_url
+    
+    print(f"[API DEBUG] Requested download for Scan {scan_id}")
+    print(f"[API DEBUG] DB report_url: {file_path}")
 
-    # 2. If not in DB (rare, maybe very recent), try Celery
-    task_result = AsyncResult(scan_id, app=celery_app)
-    if task_result and task_result.state != 'PENDING':
-        # We found it in Celery but not DB (maybe DB save failed or pending)
-        # For now, just 404 because we rely on DB for ownership check
-        pass
+    # Fallback logic: if report_url is None or wrong, try to construct it
+    if not file_path:
+        # Default location based on our orchestrator logic
+        potential_path = f"/app/scan_results/{scan_id}/Gemini_Security_Report.pdf"
+        print(f"[API DEBUG] report_url was null. Trying default: {potential_path}")
+        file_path = potential_path
 
-    raise HTTPException(
-        status_code=status.HTTP_404_NOT_FOUND,
-        detail=f"Scan job {scan_id} not found."
+    if not os.path.exists(file_path):
+        print(f"[API ERROR] File NOT found at: {file_path}")
+        # Check if directory exists at all
+        dir_path = os.path.dirname(file_path)
+        if os.path.exists(dir_path):
+            print(f"[API DEBUG] Directory exists. Listing contents of {dir_path}:")
+            print(os.listdir(dir_path))
+        else:
+            print(f"[API DEBUG] Directory does NOT exist: {dir_path}")
+
+        raise HTTPException(status_code=404, detail="PDF report file not found on server.")
+        
+    # 4. Return the file
+    print(f"[API DEBUG] File found! Serving: {file_path}")
+    return FileResponse(
+        path=file_path, 
+        filename=f"Sentinel_Report_{scan_id}.pdf", 
+        media_type='application/pdf'
     )

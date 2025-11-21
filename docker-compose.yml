@@ -40,7 +40,7 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./scan_results:/app/scan_results
-      - "C:/Users/Lenovo/Desktop/scannable_projects:/app/projects_to_scan"
+      - "C:/Users/archana/Desktop/scannable_projects:/app/projects_to_scan"
     depends_on:
       - backend
       - redis
