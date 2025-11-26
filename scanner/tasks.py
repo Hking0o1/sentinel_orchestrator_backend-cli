@@ -1,5 +1,5 @@
-# ... (imports remain the same) ...
 import pydantic
+import os
 from celery import Celery
 from config.settings import settings
 from app.models.scan import ScanCreate, ScanJob, ScanStatus, ScanSeverity, ScanFinding, ScanJobUpdate
@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 import asyncio
 from croniter import croniter
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+from app.core.storage import storage
 
 celery_app = Celery("scanner", broker=settings.REDIS_URL, backend=settings.REDIS_URL, include=["scanner.tasks"])
 celery_app.conf.update(task_track_started=True, broker_connection_retry_on_startup=True, task_serializer='json', result_serializer='json', accept_content=['json'], beat_schedule={'dispatch-scheduled-scans-every-30-mins': {'task': 'scanner.tasks.dispatch_scheduled_scans', 'schedule': timedelta(minutes=30)}})
@@ -43,6 +44,16 @@ def run_security_scan(self, scan_create_json: str, user_email: str, schedule_id:
             job_id=self.request.id, profile=scan_config.profile, target_url=str(scan_config.target_url) if scan_config.target_url else None,
             source_code_path=scan_config.source_code_path, auth_cookie=scan_config.auth_cookie
         )
+        report_local_path = orchestration_result.get('report_url')
+        report_s3_url = None
+        
+        if report_local_path and os.path.exists(report_local_path):
+            print(f"[WORKER] Uploading report to MinIO...")
+         
+            report_s3_url = storage.upload_file(
+                report_local_path, 
+                object_name=f"{self.request.id}/report.pdf"
+            )
         findings_raw = orchestration_result.get('findings', [])
         validated_findings = []
         for f in findings_raw:
@@ -63,12 +74,10 @@ def run_security_scan(self, scan_create_json: str, user_email: str, schedule_id:
             findings=validated_findings,
             highest_severity=highest_sev,
             attack_path_analysis=orchestration_result.get('raw_reports', {}).get('AI_Attack_Path_Analysis'),
-            report_url=orchestration_result.get('report_url'),
-            
-            # --- FIX: Capture AI Report Text ---
+            report_url=report_s3_url ,
             ai_report_text=orchestration_result.get('ai_report_text')
-            # -----------------------------------
         )
+        
     except Exception as e:
         print(f"[WORKER] Scan failed: {e}")
         self.update_state(state=str(ScanStatus.FAILED), meta={'error': str(e)})

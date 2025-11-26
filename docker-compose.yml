@@ -106,6 +106,37 @@ services:
     networks:
       - sentinel_net
 
+ # --- 7. NEW: MinIO Object Storage (S3 Compatible) ---
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000" # API port
+      - "9001:9001" # Console UI port
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    volumes:
+      - minio_data:/data
+    networks:
+      - sentinel_net
+
+  # --- 8. NEW: Create Default Bucket ---
+  # This tiny container runs once to create the 'scan-reports' bucket
+  createbuckets:
+    image: minio/mc
+    depends_on:
+      - minio
+    networks:
+      - sentinel_net
+    entrypoint: >
+      /bin/sh -c "
+      /usr/bin/mc alias set myminio http://minio:9000 ${MINIO_ROOT_USER} ${MINIO_ROOT_PASSWORD};
+      /usr/bin/mc mb myminio/scan-reports;
+      /usr/bin/mc anonymous set download myminio/scan-reports;
+      exit 0;
+      "
+
 networks:
   sentinel_net:
     driver: bridge
@@ -113,3 +144,4 @@ networks:
 volumes:
   redis_data:
   postgres_data:
+  minio_data: # <-- NEW Volume

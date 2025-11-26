@@ -7,6 +7,7 @@ from typing import TypedDict, List, Dict, Any, Tuple, Optional
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from scanner.tools import (run_sca_scan, run_sast_scan, run_container_scan, run_iac_scan, run_resilience_check, run_nikto_scan, run_zap_scan, run_sqlmap_scan)
 from scanner.tools.utils import get_logger, normalize_severity
+from scanner.guardrails import redact_pii_from_data
 from scanner.correlation.engine import CorrelationEngine
 from langgraph.graph import StateGraph, END
 from config.settings import settings
@@ -152,25 +153,65 @@ def correlation_node(state: GraphState) -> GraphState:
     return state
 
 def attack_modeling_node(state: GraphState) -> GraphState:
-    if not LANGCHAIN_AVAILABLE or not state['findings']: return state
+    logger.info("--- AI ATTACK PATH MODELING ---")
+    if not LANGCHAIN_AVAILABLE or not state['findings']:
+        return state
+
     try:
-        summary_for_ai = [f"{f.get('severity')}: {f.get('title')}" for f in state['findings'][:10]]
+        safe_findings = redact_pii_from_data(state['findings'])
+
+        summary_for_ai = []
+        for f in safe_findings:
+            if f.get('severity') in ['CRITICAL', 'HIGH']:
+                summary_for_ai.append(f"{f.get('severity')}: {f.get('title')} ({f.get('tool_source')})")
+        
+        if not summary_for_ai:
+             summary_for_ai = [f"{f.get('severity')}: {f.get('title')}" for f in safe_findings[:10]]
+
         findings_json = json.dumps(summary_for_ai, indent=2)
-        prompt = ChatPromptTemplate.from_messages([("system", "Analyze findings."), ("human", f"Findings:\n{findings_json}")])
-        llm = ChatOllama(base_url="[http://host.docker.internal:11434](http://host.docker.internal:11434)", model="gemma:2b")
+        
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", "You are a senior penetration tester. Analyze these security findings. Model 1-3 plausible, step-by-step attack paths an attacker could take to compromise the system."),
+            ("human", "Findings:\n{findings}")
+        ])
+        
+        llm = ChatOllama(
+            base_url="[http://host.docker.internal:11434](http://host.docker.internal:11434)", 
+            model="gemma:2b"
+        )
+        
         chain = prompt | llm | StrOutputParser()
-        analysis = chain.invoke({})
+        analysis = chain.invoke({"findings": findings_json})
+        
         state['raw_reports']['AI_Attack_Path_Analysis'] = analysis
+        state['report_summary'].append("AI Attack Path Modeling complete.")
+        
     except Exception as e:
         logger.error(f"AI Attack Modeling failed: {e}")
+        
     return state
 
 def gemini_summarizer_node(state: GraphState) -> Tuple[GraphState, List[Dict[str, Any]]]:
-    if not GEMINI_AVAILABLE: return state, []
-    findings_summary = json.dumps(state['findings'][:50], indent=2, default=str) 
-    prompt = f"""You are a Security Engineer. Write a penetration test report.
-    **Scan Data:** {findings_summary}
-    **Instructions:** 1. Markdown report. 2. Separator ---TICKETING-JSON--- 3. JSON tickets."""
+    logger.info("--- AI FINAL REPORT (GEMINI) ---")
+    if not GEMINI_AVAILABLE:
+        logger.warning("Gemini API key not configured.")
+        return state, []
+
+    safe_findings = redact_pii_from_data(state['findings'][:50])
+
+    findings_summary = json.dumps(safe_findings, indent=2, default=str) 
+    
+    prompt = f"""
+    You are a Principal Application Security Engineer. Write a professional penetration test report based on these findings.
+    
+    **Scan Data:**
+    {findings_summary}
+
+    **Instructions:**
+    1. Generate a Markdown report with: Executive Summary, detailed findings grouped by severity, and a prioritized remediation plan.
+    2. After the report, add the separator ---TICKETING-JSON---
+    3. Then provide a JSON array of tickets for CRITICAL/HIGH issues. Format: {{ "title": "...", "priority": "...", "description": "...", "remediation": "..." }}
+    """
     
     ticketing_json = []
     try:
@@ -192,12 +233,13 @@ def gemini_summarizer_node(state: GraphState) -> Tuple[GraphState, List[Dict[str
                 if json_str.endswith("```"):
                     json_str = json_str[:-3]
                 
-                json_str = json_str.strip() # Clean up any remaining whitespace
-                # ----------------------------------------------------------
-
+                json_str = json_str.strip() 
                 ticketing_json = json.loads(json_str)
             except json.JSONDecodeError:
                 logger.error("Failed to parse ticketing JSON.")
+
+        # Store markdown for frontend use
+        state['raw_reports']['AI_Report_Text'] = markdown_report
 
         md_path = os.path.join(state['output_dir'], "Gemini_Security_Report.md")
         pdf_path = os.path.join(state['output_dir'], "Gemini_Security_Report.pdf")

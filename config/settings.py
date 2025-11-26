@@ -49,7 +49,14 @@ class Settings(BaseSettings):
     POSTGRES_PASSWORD: str
     POSTGRES_DB: str
     
-    # --- FIX: We now compute the DATABASE_URL automatically ---
+
+    # --- MinIO ---
+    MINIO_ROOT_USER: str = "minioadmin"
+    MINIO_ROOT_PASSWORD: str = "minioadminpassword"
+    MINIO_ENDPOINT: str = "minio:9000"
+    MINIO_PUBLIC_ENDPOINT: str = "http://localhost:9000"
+    MINIO_BUCKET_NAME: str = "scan-reports"
+    
     # This prevents all parsing and special character errors.
     @pydantic.computed_field
     @property

@@ -33,3 +33,5 @@ sqlalchemy>=2.0.30
 asyncpg>=0.29.0
 alembic>=1.13.2
         
+boto3==1.41.2
+botocore==1.41.2
