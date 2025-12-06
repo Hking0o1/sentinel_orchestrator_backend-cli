@@ -134,3 +134,42 @@ async def download_scan_pdf(
         filename=f"Sentinel_Report_{scan_id}.pdf", 
         media_type='application/pdf'
     )
+
+@router.get("/findings/all", response_model=List[ScanFinding])
+async def get_all_vulnerabilities(
+    current_user: User = Depends(get_current_user),
+    db = Depends(get_db_session),
+    limit: int = 500
+):
+    """
+    Aggregates findings from the user's recent scans.
+    This provides a global view of vulnerabilities.
+    """
+    # 1. Fetch recent completed scans
+    # We re-use get_scan_history but request more items
+    scans = await crud.get_scan_history(db, owner_id=current_user.id, limit=50)
+    
+    all_findings = []
+    
+    for scan in scans:
+        if scan.status == 'COMPLETED' and scan.findings:
+            # We iterate through the JSONB list
+            for finding_dict in scan.findings:
+                # We optionally inject the target name into the location for context
+                # (This helps the user know WHICH app has the vulnerability)
+                target_name = scan.target_url or scan.source_code_path or "Unknown"
+                
+                # Create a copy to avoid mutating the DB object in memory
+                f = finding_dict.copy()
+                
+                # Prepend target to location if it exists
+                original_loc = f.get('location') or ""
+                f['location'] = f"[{target_name}] {original_loc}"
+                
+                all_findings.append(f)
+    
+    # Sort by severity (Critical first)
+    sev_order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3, "INFO": 4}
+    all_findings.sort(key=lambda x: sev_order.get(x.get('severity', 'INFO'), 5))
+    
+    return all_findings[:limit]
