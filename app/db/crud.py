@@ -8,6 +8,7 @@ from app.db.models import User, ScanJob, ScanSchedule
 from app.models.user import UserCreate
 from app.models.scan import ScanCreate, ScanJobUpdate, ScanStatus
 from app.models.schedule import ScanScheduleCreate, ScanScheduleUpdate
+from app.models.user import UserUpdate
 
 # ... (User functions remain the same) ...
 async def get_user_by_email(db: AsyncSession, email: str) -> User | None:
@@ -112,3 +113,26 @@ async def delete_scan_schedule(db: AsyncSession, schedule_id: UUID) -> bool:
     await db.delete(db_schedule)
     await db.commit()
     return True
+
+async def update_user(db: AsyncSession, user_id: UUID, user_in: UserUpdate) -> User:
+    """
+    Updates a user's profile information.
+    """
+    db_user = await get_user(db, user_id)
+    if not db_user:
+        return None
+    
+    update_data = user_in.model_dump(exclude_unset=True)
+    
+    if 'password' in update_data and update_data['password']:
+        from app.core.security import get_password_hash
+        hashed_password = get_password_hash(update_data['password'])
+        db_user.hashed_password = hashed_password
+        del update_data['password'] # Remove raw password from dict
+
+    for field, value in update_data.items():
+        setattr(db_user, field, value)
+
+    await db.commit()
+    await db.refresh(db_user)
+    return db_user
