@@ -35,3 +35,6 @@ alembic>=1.13.2
         
 boto3==1.41.2
 botocore==1.41.2
+
+jira==3.10.5
+

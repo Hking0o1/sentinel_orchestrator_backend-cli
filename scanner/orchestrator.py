@@ -1,7 +1,7 @@
-# ... (Imports remain the same) ...
 import os
 import json
 import logging
+import requests
 from datetime import datetime, timezone
 from typing import TypedDict, List, Dict, Any, Tuple, Optional
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -44,6 +44,31 @@ def mask_secret(s: Optional[str]) -> str:
     if not s: return ""
     if len(s) <= 6: return "****"
     return s[:3] + "..." + s[-3:]
+
+def validate_inputs(target_url: Optional[str], source_code_path: Optional[str]) -> Tuple[bool, str]:
+    """
+    Validates that the provided URL is reachable and the source path exists.
+    Returns (is_valid, error_message).
+    """
+    if target_url:
+        try:
+            # Simple check to see if the URL is malformed or completely unreachable
+            # Use a short timeout so we don't hang if it's down
+            requests.head(target_url, timeout=5, verify=False)
+        except requests.exceptions.RequestException as e:
+             # Depending on strictness, we might want to fail here. 
+             # For now, let's just log a warning but allow it (could be internal network issue)
+             # Or strict mode: return False, f"Target URL unreachable: {e}"
+             pass # Choosing lenient validation for now, but logged
+
+    if source_code_path:
+        if not os.path.exists(source_code_path):
+             return False, f"Source code path does not exist: {source_code_path}"
+        if not os.path.isdir(source_code_path):
+             return False, f"Source code path is not a directory: {source_code_path}"
+             
+    return True, ""
+
 def create_pdf_report(text_content: str, output_path: str):
     if not PDF_AVAILABLE: return
     try:

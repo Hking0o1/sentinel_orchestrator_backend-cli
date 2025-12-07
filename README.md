@@ -73,6 +73,15 @@ The backend handles authentication and offloads long-running scan jobs to a **Ce
 - **🕸️ AI Attack Path Modeling:**  
   Uses a local **LLM (Ollama)** to analyze and simulate how vulnerabilities could be chained together.
 
+- **Authenticated Scanning:**
+ Supports deep "grey-box" scanning using session cookies.
+
+- **Automated Scheduling:**
+ Built-in CRON scheduler for recurring security audits.
+
+- **Architectural Resilience:**
+ Checks for CDN usage (Cloudflare/Akamai) and Rate Limiting.
+
 ---
 
 ## ⚙️ Prerequisites
