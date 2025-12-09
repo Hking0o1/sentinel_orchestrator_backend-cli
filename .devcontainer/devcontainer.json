@@ -3,27 +3,22 @@
   "image": "mcr.microsoft.com/devcontainers/python:3.11-bullseye",
   
   "features": {
-    # We need Docker-in-Docker so our worker container can spawn sibling containers (like ZAP)
     "ghcr.io/devcontainers/features/docker-in-docker:2": {
       "version": "latest",
       "enableNonRootDocker": "true",
       "moby": "true"
     },
-    # Install Node.js for the Frontend
     "ghcr.io/devcontainers/features/node:1": {
       "version": "18"
     },
-    # Install common utilities
     "ghcr.io/devcontainers/features/common-utils:2": {
       "installZsh": "true",
       "configureZshAsDefaultShell": "true"
     }
   },
 
-  # Forward these ports so you can access them in your browser
   "forwardPorts": [4000, 80, 8000, 9000, 9001, 8888, 5432],
 
-  # Configure VS Code inside the browser
   "customizations": {
     "vscode": {
       "extensions": [
@@ -35,10 +30,7 @@
     }
   },
 
-  # Run this command after the Codespace is created
-  # It installs dependencies automatically
   "postCreateCommand": "pip install -r requirements.txt && cd frontend && npm install",
 
-  # Connect as the 'vscode' user (non-root)
   "remoteUser": "vscode"
 }
