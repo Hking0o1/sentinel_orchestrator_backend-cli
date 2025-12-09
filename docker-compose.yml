@@ -1,7 +1,8 @@
+# This is the master file that defines and runs our entire multi-container application.
 version: '3.8'
 
 services:
-  # ... (proxy, backend, worker, beat, redis remain exactly the same) ...
+  # --- 1. NGINX Reverse Proxy (The "Gatehouse") ---
   proxy:
     build:
       context: ./proxy
@@ -13,6 +14,7 @@ services:
     networks:
       - sentinel_net
 
+  # --- 2. FastAPI Backend API (The "Fortress") ---
   backend:
     build:
       context: .
@@ -20,15 +22,17 @@ services:
     env_file:
       - .env
     volumes:
+      # Use a bind mount for scan results
       - ./scan_results:/app/scan_results
     depends_on:
       db:
         condition: service_healthy
       redis:
-        condition: service_healthy
+        condition: service_started
     networks:
       - sentinel_net
 
+  # --- 3. Celery Scanner Worker (The "Engine") ---
   worker:
     build:
       context: .
@@ -40,7 +44,11 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./scan_results:/app/scan_results
-      - "C:/Users/archana/Desktop/scannable_projects:/app/projects_to_scan"
+      # --- FIX: Use a relative path to avoid Windows drive letter issues ---
+      # 1. Create a folder named 'scannable_projects' in your project root.
+      # 2. Put your target code inside that folder.
+      - ./scannable_projects:/app/projects_to_scan
+      # ---------------------------------------------------------------------
     depends_on:
       - backend
       - redis
@@ -49,6 +57,7 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
+  # --- 4. Celery Beat Scheduler (The "Heartbeat") ---
   beat:
     build:
       context: .
@@ -64,8 +73,12 @@ services:
       - redis
     networks:
       - sentinel_net
-    command: sh -c "celery -A scanner.tasks.celery_app beat --loglevel=info --schedule=/app/scan_results/celerybeat-schedule"
+    command: >
+      sh -c "celery -A scanner.tasks.celery_app beat 
+             --loglevel=info 
+             --schedule=/app/scan_results/celerybeat-schedule"
     
+  # --- 5. Redis Cache & Message Broker ---
   redis:
     image: redis:7-alpine
     healthcheck:
@@ -78,6 +91,7 @@ services:
     volumes:
       - redis_data:/data
 
+  # --- 6. PostgreSQL Database ---
   db:
     image: postgres:16-alpine
     environment:
@@ -95,18 +109,8 @@ services:
       retries: 5
     ports:
       - "5432:5432"
-
-  # --- NEW: Log Viewer UI ---
-  dozzle:
-    image: amir20/dozzle:latest
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-    ports:
-      - "8888:8080"
-    networks:
-      - sentinel_net
-
- # --- 7. NEW: MinIO Object Storage (S3 Compatible) ---
+  
+  # --- 7. MinIO Object Storage ---
   minio:
     image: minio/minio:latest
     command: server /data --console-address ":9001"
@@ -120,28 +124,50 @@ services:
       - minio_data:/data
     networks:
       - sentinel_net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
 
-  # --- 8. NEW: Create Default Bucket ---
-  # This tiny container runs once to create the 'scan-reports' bucket
+  # --- 8. Create Default Bucket (FIXED) ---
   createbuckets:
     image: minio/mc
     depends_on:
-      - minio
+      minio:
+        condition: service_healthy
     networks:
       - sentinel_net
+    # FIX: Removed comments to prevent YAML folding issues that were breaking the script logic
     entrypoint: >
       /bin/sh -c "
-      /usr/bin/mc alias set myminio http://minio:9000 ${MINIO_ROOT_USER} ${MINIO_ROOT_PASSWORD};
-      /usr/bin/mc mb myminio/scan-reports;
+      until /usr/bin/mc alias set myminio http://minio:9000 ${MINIO_ROOT_USER} ${MINIO_ROOT_PASSWORD}; do
+        echo 'Waiting for MinIO...';
+        sleep 5;
+      done;
+      /usr/bin/mc mb --ignore-existing myminio/scan-reports;
       /usr/bin/mc anonymous set download myminio/scan-reports;
+      echo 'Bucket created successfully.';
       exit 0;
       "
+  
+  # --- 9. Log Viewer UI ---
+  dozzle:
+    image: amir20/dozzle:latest
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    ports:
+      - "8888:8080"
+    networks:
+      - sentinel_net
 
+# --- Define Networks ---
 networks:
   sentinel_net:
     driver: bridge
 
+# --- Define Persistent Volumes ---
 volumes:
   redis_data:
   postgres_data:
-  minio_data: # <-- NEW Volume
+  minio_data:

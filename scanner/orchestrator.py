@@ -1,17 +1,36 @@
+"""
+Ultra-Optimized Orchestrator with Correlation Engine
+"""
 import os
 import json
 import logging
-import requests
 from datetime import datetime, timezone
 from typing import TypedDict, List, Dict, Any, Tuple, Optional
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from scanner.tools import (run_sca_scan, run_sast_scan, run_container_scan, run_iac_scan, run_resilience_check, run_nikto_scan, run_zap_scan, run_sqlmap_scan)
+
+# --- Import our modularized tools ---
+from scanner.tools import (
+    run_sca_scan,
+    run_sast_scan,
+    run_container_scan,
+    run_iac_scan,
+    run_resilience_check,
+    run_nikto_scan,
+    run_zap_scan,
+    run_sqlmap_scan
+)
 from scanner.tools.utils import get_logger, normalize_severity
-from scanner.guardrails import redact_pii_from_data
+
+# --- Import Correlation Engine ---
 from scanner.correlation.engine import CorrelationEngine
+
 from langgraph.graph import StateGraph, END
 from config.settings import settings
-# ... (AI Imports remain the same) ...
+
+# --- Setup Logger ---
+logger = get_logger("orchestrator")
+
+# --- AI & PDF Generation Dependencies ---
 try:
     import google.generativeai as genai
     from fpdf import FPDF
@@ -23,6 +42,7 @@ try:
         GEMINI_AVAILABLE = False
     PDF_AVAILABLE = True
 except ImportError:
+    logger.warning("Gemini or FPDF not installed. Reporting features limited.")
     GEMINI_AVAILABLE = False
     PDF_AVAILABLE = False
 
@@ -32,75 +52,95 @@ try:
     from langchain_core.prompts import ChatPromptTemplate
     LANGCHAIN_AVAILABLE = True
 except ImportError:
+    logger.warning("LangChain/Ollama not installed. Attack path modeling disabled.")
     LANGCHAIN_AVAILABLE = False
 
-logger = get_logger("orchestrator")
 
-# ... (Helper functions: safe_path, mask_secret, create_pdf_report remain the same) ...
+# --- Helper Functions ---
+
 def safe_path(path: str) -> str:
+    """Sanitizes a file path."""
     if not path: return ""
     return os.path.abspath(str(path))
+
 def mask_secret(s: Optional[str]) -> str:
+    """Masks secrets for logging."""
     if not s: return ""
     if len(s) <= 6: return "****"
     return s[:3] + "..." + s[-3:]
 
-def validate_inputs(target_url: Optional[str], source_code_path: Optional[str]) -> Tuple[bool, str]:
+def sanitize_text_for_pdf(text: str) -> str:
     """
-    Validates that the provided URL is reachable and the source path exists.
-    Returns (is_valid, error_message).
+    Replaces characters that are not supported by the standard FPDF fonts (Latin-1).
     """
-    if target_url:
-        try:
-            # Simple check to see if the URL is malformed or completely unreachable
-            # Use a short timeout so we don't hang if it's down
-            requests.head(target_url, timeout=5, verify=False)
-        except requests.exceptions.RequestException as e:
-             # Depending on strictness, we might want to fail here. 
-             # For now, let's just log a warning but allow it (could be internal network issue)
-             # Or strict mode: return False, f"Target URL unreachable: {e}"
-             pass # Choosing lenient validation for now, but logged
-
-    if source_code_path:
-        if not os.path.exists(source_code_path):
-             return False, f"Source code path does not exist: {source_code_path}"
-        if not os.path.isdir(source_code_path):
-             return False, f"Source code path is not a directory: {source_code_path}"
-             
-    return True, ""
+    replacements = {
+        "•": "-",
+        "–": "-",
+        "—": "-",
+        "“": '"',
+        "”": '"',
+        "‘": "'",
+        "’": "'",
+        "…": "...",
+    }
+    for char, replacement in replacements.items():
+        text = text.replace(char, replacement)
+    
+    # Fallback: force encode to latin-1, replacing unknown chars with '?'
+    return text.encode('latin-1', 'replace').decode('latin-1')
 
 def create_pdf_report(text_content: str, output_path: str):
+    """Generates a PDF from Markdown-like text content."""
     if not PDF_AVAILABLE: return
     try:
         pdf = FPDF()
         pdf.add_page()
-        try: pdf.set_font("helvetica", size=11)
-        except Exception: pdf.set_font("Arial", size=11)
+        try:
+            pdf.set_font("helvetica", size=11)
+        except Exception:
+            pdf.set_font("Arial", size=11)
+            
         pdf.set_auto_page_break(auto=True, margin=15)
         in_code_block = False
-        for line in text_content.split('\n'):
+        
+        # Pre-process text to remove unsupported characters
+        safe_content = sanitize_text_for_pdf(text_content)
+        
+        for line in safe_content.split('\n'):
             if line.startswith('```'):
                 in_code_block = not in_code_block
                 if in_code_block:
-                    pdf.set_font("courier", size=9); pdf.set_fill_color(240, 240, 240)
+                    pdf.set_font("courier", size=9)
+                    pdf.set_fill_color(240, 240, 240)
                 else:
                     pdf.set_font("helvetica", size=11)
-                pdf.ln(5); continue
+                pdf.ln(5)
+                continue
+
             if line.startswith('# '):
-                pdf.set_font(style='B', size=20); pdf.ln(10); pdf.cell(0, 10, line[2:], new_x="LMARGIN", new_y="NEXT")
+                pdf.set_font(style='B', size=20); pdf.ln(10)
+                pdf.cell(0, 10, line[2:], new_x="LMARGIN", new_y="NEXT")
             elif line.startswith('## '):
-                pdf.set_font(style='B', size=16); pdf.ln(8); pdf.cell(0, 10, line[3:], new_x="LMARGIN", new_y="NEXT")
+                pdf.set_font(style='B', size=16); pdf.ln(8)
+                pdf.cell(0, 10, line[3:], new_x="LMARGIN", new_y="NEXT")
             elif line.startswith('### '):
-                pdf.set_font(style='B', size=14); pdf.ln(6); pdf.cell(0, 10, line[4:], new_x="LMARGIN", new_y="NEXT")
+                pdf.set_font(style='B', size=14); pdf.ln(6)
+                pdf.cell(0, 10, line[4:], new_x="LMARGIN", new_y="NEXT")
             elif line.startswith('* '):
-                pdf.ln(2); pdf.cell(5); pdf.multi_cell(0, 5, f"• {line[2:]}")
+                # FIX: Use hyphen instead of bullet to avoid unicode errors
+                pdf.ln(2); pdf.cell(5)
+                pdf.multi_cell(0, 5, f"- {line[2:]}")
             else:
                 pdf.multi_cell(0, 5, line, fill=in_code_block)
                 if not in_code_block: pdf.ln(1)
+        
         pdf.output(output_path)
+        logger.info(f"PDF report saved to: {output_path}")
     except Exception as e:
         logger.error(f"Failed to generate PDF report: {e}")
 
+
+# --- LangGraph State Definition ---
 class GraphState(TypedDict):
     job_id: str 
     profile: str
@@ -113,19 +153,32 @@ class GraphState(TypedDict):
     raw_reports: Dict[str, Any]
     start_time: datetime
 
-# ... (setup_node, run_parallel_scans_node, correlation_node, attack_modeling_node remain the same) ...
+
+# --- Nodes ---
+
 def setup_node(state: GraphState) -> GraphState:
+    logger.info(f"--- SETUP (Job: {state['job_id']}, Profile: {state['profile'].upper()}) ---")
+    # Ensure output directory exists
     output_dir = safe_path(f"scan_results/{state['job_id']}")
     os.makedirs(output_dir, exist_ok=True)
-    state.update({'output_dir': output_dir, 'report_summary': [], 'findings': [], 'raw_reports': {}})
+    
+    state.update({
+        'output_dir': output_dir,
+        'report_summary': [f"Scan started for {state['target_url'] or state['source_code_path']}"],
+        'findings': [],
+        'raw_reports': {}
+    })
     return state
 
 def run_parallel_scans_node(state: GraphState) -> GraphState:
+    logger.info(f"--- PARALLEL SCAN PHASE ---")
     profile = state['profile']
     target_url = state.get('target_url')
     source_code_path = state.get('source_code_path')
     output_dir = state['output_dir']
     auth_cookie = state.get('auth_cookie')
+
+    # Map job names to their functions and arguments
     all_jobs = {
         'sca': (run_sca_scan, (source_code_path, output_dir)),
         'sast': (run_sast_scan, (source_code_path, output_dir)),
@@ -136,45 +189,82 @@ def run_parallel_scans_node(state: GraphState) -> GraphState:
         'zap': (run_zap_scan, (target_url, output_dir, auth_cookie)),
         'sqlmap': (run_sqlmap_scan, (target_url, output_dir)),
     }
-    jobs_to_run = []
-    if profile == 'developer': jobs_to_run = ['sast', 'sca', 'iac', 'container']
-    elif profile == 'web': jobs_to_run = ['resilience', 'nikto', 'zap', 'sqlmap'] if target_url else []
-    elif profile == 'full':
-        if source_code_path: jobs_to_run.extend(['sast', 'sca', 'iac', 'container'])
-        if target_url: jobs_to_run.extend(['resilience', 'nikto', 'zap', 'sqlmap'])
     
-    if not jobs_to_run: return state
+    jobs_to_run = []
+    if profile == 'developer':
+        jobs_to_run = ['sast', 'sca', 'iac', 'container']
+    elif profile == 'web':
+        if target_url:
+            jobs_to_run = ['resilience', 'nikto', 'zap', 'sqlmap']
+        else:
+            logger.warning("Web profile selected but no target_url provided.")
+    elif profile == 'full':
+        if source_code_path:
+            jobs_to_run.extend(['sast', 'sca', 'iac', 'container'])
+        if target_url:
+            jobs_to_run.extend(['resilience', 'nikto', 'zap', 'sqlmap'])
 
-    with ProcessPoolExecutor(max_workers=min(len(jobs_to_run), 8)) as executor:
+    if not jobs_to_run:
+        return state
+
+    # Use ProcessPoolExecutor for true parallelism
+    max_workers = min(len(jobs_to_run), int(os.getenv("MAX_WORKERS", 8)))
+    
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
         future_to_job = {}
         for name in jobs_to_run:
             if name in all_jobs:
                 func, args = all_jobs[name]
+                
+                # Check 1: Do we have the required arguments?
                 if 'sca' in name or 'sast' in name or 'iac' in name or 'container' in name:
-                    if not args[0]: continue 
+                    if not args[0]: 
+                        logger.warning(f"Skipping {name}: No source code path provided.")
+                        continue 
+                    
+                    # Check 2: Does the path exist? (FIX for "Path does not exist" error)
+                    if not os.path.exists(args[0]):
+                        logger.error(f"Skipping {name}: Path does not exist inside container: {args[0]}")
+                        state['report_summary'].append(f"Skipped {name}: Path not found: {args[0]}")
+                        continue
+                
                 future = executor.submit(func, *args)
                 future_to_job[future] = name
 
         for future in as_completed(future_to_job):
+            job_name = future_to_job[future]
             try:
                 result = future.result()
-                state['findings'].extend(result.get('findings', []))
-                if result.get('raw_report'):
-                    label, content = result['raw_report']
+                new_findings = result.get('findings', [])
+                if new_findings:
+                    state['findings'].extend(new_findings)
+                
+                raw_report = result.get('raw_report')
+                if raw_report:
+                    label, content = raw_report
                     state['raw_reports'][label] = str(content)
+
+                logger.info(f"Job {job_name} finished. Found {len(new_findings)} issues.")
             except Exception as exc:
-                logger.error(f"Job failed: {exc}")
+                logger.error(f"Job {job_name} failed: {exc}")
+                state['report_summary'].append(f"Job {job_name} failed: {exc}")
+
+    state['report_summary'].append(f"Parallel scans complete. Raw findings: {len(state['findings'])}")
     return state
 
 def correlation_node(state: GraphState) -> GraphState:
+    logger.info("--- CORRELATION ENGINE ---")
     if not state['findings']: return state
     try:
         engine = CorrelationEngine()
         engine.ingest_standard_findings(state['findings'])
         correlated = engine.run()
         state['findings'] = [f.model_dump() for f in correlated]
+        logger.info(f"Correlation complete. Consolidated to {len(state['findings'])} findings.")
+        state['report_summary'].append(f"Correlation Engine: Consolidated to {len(state['findings'])} findings.")
     except Exception as e:
         logger.error(f"Correlation failed: {e}")
+        state['report_summary'].append(f"Correlation Engine failed: {e}")
     return state
 
 def attack_modeling_node(state: GraphState) -> GraphState:
@@ -183,15 +273,14 @@ def attack_modeling_node(state: GraphState) -> GraphState:
         return state
 
     try:
-        safe_findings = redact_pii_from_data(state['findings'])
-
+        # We summarize findings to avoid hitting token limits
         summary_for_ai = []
-        for f in safe_findings:
+        for f in state['findings']:
             if f.get('severity') in ['CRITICAL', 'HIGH']:
                 summary_for_ai.append(f"{f.get('severity')}: {f.get('title')} ({f.get('tool_source')})")
         
         if not summary_for_ai:
-             summary_for_ai = [f"{f.get('severity')}: {f.get('title')}" for f in safe_findings[:10]]
+             summary_for_ai = [f"{f.get('severity')}: {f.get('title')}" for f in state['findings'][:10]]
 
         findings_json = json.dumps(summary_for_ai, indent=2)
         
@@ -222,9 +311,8 @@ def gemini_summarizer_node(state: GraphState) -> Tuple[GraphState, List[Dict[str
         logger.warning("Gemini API key not configured.")
         return state, []
 
-    safe_findings = redact_pii_from_data(state['findings'][:50])
-
-    findings_summary = json.dumps(safe_findings, indent=2, default=str) 
+    # Prepare context
+    findings_summary = json.dumps(state['findings'][:50], indent=2, default=str) 
     
     prompt = f"""
     You are a Principal Application Security Engineer. Write a professional penetration test report based on these findings.
@@ -315,6 +403,19 @@ def run_orchestration(job_id: str, profile: str, target_url: Optional[str], sour
     )
     
     final_state = app.invoke(initial_state)
+
+    try:
+        findings_to_save = final_state.get('findings', [])
+        if findings_to_save:
+            thread = threading.Thread(
+                target=data_sanitizer.process_and_save, 
+                args=(findings_to_save,),
+                daemon=True # Daemon threads die if the main process dies
+            )
+            thread.start()
+            logger.info("Triggered background data sanitization task.")
+    except Exception as e:
+        logger.error(f"Failed to start data pipeline thread: {e}")
     
     severity_counts = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0, "INFO": 0}
     for f in final_state.get('findings', []):
