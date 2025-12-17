@@ -3,13 +3,22 @@ import requests
 import json
 import sys
 import os
+import time
+from rich.console import Console
+from rich.table import Table
+from rich.panel import Panel
+from rich.text import Text
+from rich.json import JSON
+from rich.live import Live
+from rich.spinner import Spinner
 
 # --- Configuration ---
-# Load the backend URL from an environment variable, falling back to localhost
 BACKEND_API_URL = os.environ.get("SENTINEL_API_URL", "http://localhost:80")
+console = Console()
 
 # --- ASCII Art Poster ---
-POSTER = r"""
+def print_header():
+    title = r"""
 ███████╗███████╗███╗   ██╗████████╗██╗███╗   ██╗███████╗██╗
 ██╔════╝██╔════╝████╗  ██║╚══██╔══╝██║████╗  ██║██╔════╝██║
 ███████╗█████╗  ██╔██╗ ██║   ██║   ██║██╔██╗ ██║█████╗  ██║
@@ -17,13 +26,18 @@ POSTER = r"""
 ███████║███████╗██║ ╚████║   ██║   ██║██║ ╚████║███████╗██╗
 ╚══════╝╚══════╝╚═╝  ╚═══╝   ╚═╝   ╚═╝╚═╝  ╚═══╝╚══════╝╚═╝
            ... DevSecOps Orchestration Engine ...
-"""
+    """
+    console.print(Panel.fit(Text(title, style="bold cyan"), border_style="blue"))
 
 # --- Helper Functions ---
 
-def print_err(message):
-    """Prints an error message to stderr."""
-    print(f"\n[ERROR] {message}\n", file=sys.stderr)
+def print_error(message, details=None):
+    console.print(f"[bold red]❌ Error:[/bold red] {message}")
+    if details:
+        console.print(Panel(str(details), title="Details", border_style="red"))
+
+def print_success(message):
+    console.print(f"[bold green]✅ Success:[/bold green] {message}")
 
 def get_auth_token(username, password):
     """
@@ -45,45 +59,35 @@ def get_auth_token(username, password):
     return None
 
 def handle_start_scan(token, args):
-    """
-    Sends a request to the backend API to start a new security scan.
-    """
     scan_url = f"{BACKEND_API_URL}/api/v1/scans/start"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json"
-    }
-    
-    # Construct payload
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     payload = {
         "profile": args.profile,
         "target_url": args.url,
         "source_code_path": args.src,
-        # --- FIX: Add auth_cookie from arguments ---
         "auth_cookie": args.cookie
     }
     
-    # Validate arguments based on profile (client-side)
-    if args.profile in ['developer', 'full'] and not args.src:
-        print_err(f"--src is required for the '{args.profile}' profile.")
-        sys.exit(1)
-    if args.profile in ['web', 'full'] and not args.url:
-        print_err(f"--url is required for the '{args.profile}' profile.")
-        sys.exit(1)
-
-    print(f"\nRequesting '{args.profile}' scan...")
-    if args.cookie:
-        print("[INFO] Authentication cookie provided.")
-
-    try:
-        response = requests.post(scan_url, headers=headers, data=json.dumps(payload), timeout=30)
-        response.raise_for_status()
-        print("\n[SUCCESS] Scan job accepted by backend.")
-        print(json.dumps(response.json(), indent=2))
-    except requests.exceptions.HTTPError as e:
-        print_err(f"Failed to start scan: {e.response.status_code} {e.response.text}")
-    except requests.exceptions.RequestException:
-        print_err(f"Failed to connect to backend at {scan_url}.")
+    with console.status(f"[bold yellow]Launching '{args.profile}' scan...", spinner="earth"):
+        try:
+            response = requests.post(scan_url, headers=headers, data=json.dumps(payload), timeout=30)
+            response.raise_for_status()
+            data = response.json()
+            
+            print_success("Scan job accepted!")
+            
+            table = Table(title="Scan Details", show_header=True, header_style="bold magenta")
+            table.add_column("Field", style="dim")
+            table.add_column("Value", style="bold white")
+            table.add_row("Job ID", data.get("job_id"))
+            table.add_row("Profile", data.get("profile"))
+            table.add_row("Target", data.get("target_url") or "Local Source")
+            
+            console.print(table)
+            console.print(f"\n[dim]View results: http://localhost:4000/app/scans/{data.get('job_id')}[/dim]")
+            
+        except Exception as e:
+            print_error("Failed to start scan", str(e))
         
 def handle_get_status(token, args):
     """
@@ -96,87 +100,24 @@ def handle_get_status(token, args):
 
 
 def main():
-    """
-    Main entry point for the Project Sentinel CLI tool.
-    """
-    parser = argparse.ArgumentParser(
-        description=POSTER,
-        formatter_class=argparse.RawDescriptionHelpFormatter
-    )
-    
-    # --- Global Authentication Arguments ---
+    print_header()
+    parser = argparse.ArgumentParser(description="Project Sentinel CLI")
     auth_group = parser.add_argument_group("Authentication")
-    auth_group.add_argument(
-        "-u", "--username",
-        help="Username for API authentication. (Env: SENTINEL_USER)",
-        default=os.environ.get("SENTINEL_USER", "admin@example.com")
-    )
-    auth_group.add_argument(
-        "-p", "--password",
-        help="Password for API authentication. (Env: SENTINEL_PASSWORD)",
-        default=os.environ.get("SENTINEL_PASSWORD", "SuperSecurePassword123")
-    )
+    auth_group.add_argument("-u", "--username", default=os.environ.get("SENTINEL_USER", "admin@example.com"))
+    auth_group.add_argument("-p", "--password", default=os.environ.get("SENTINEL_PASSWORD", "SuperSecurePassword123"))
     
-    subparsers = parser.add_subparsers(dest="command", required=True, help="Available commands")
-
-    # --- 'start-scan' command ---
-    scan_parser = subparsers.add_parser(
-        "start-scan", 
-        help="Initiate a new security scan job.",
-        description="Starts an asynchronous security scan on the backend. The profile determines which tools run.",
-        formatter_class=argparse.RawTextHelpFormatter
-    )
-    scan_parser.add_argument(
-        "--profile",
-        required=True,
-        choices=['developer', 'web', 'full'],
-        help="""
-  - developer: Fast code-level scans (SAST, SCA). Requires --src.
-  - web:       Dynamic scans of a live web app (DAST, Resilience). Requires --url.
-  - full:      The most comprehensive scan. Requires --url and --src.
-"""
-    )
-    scan_parser.add_argument(
-        "--url", 
-        help="Target URL for 'web' and 'full' profiles (e.g., https://staging.my-app.com)."
-    )
-    scan_parser.add_argument(
-        "--src", 
-        help="Path to the source code for 'developer' and 'full' profiles. (Must be accessible by the worker)."
-    )
-    # --- FIX: Add the --cookie argument definition ---
-    scan_parser.add_argument(
-        "--cookie",
-        help="Session cookie string for authenticated DAST scans (e.g. 'session=abc...')."
-    )
-    # -------------------------------------------------
-    
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    scan_parser = subparsers.add_parser("start-scan", help="Start a scan")
+    scan_parser.add_argument("--profile", required=True, choices=['developer', 'web', 'full'])
+    scan_parser.add_argument("--url", help="Target URL")
+    scan_parser.add_argument("--src", help="Source path")
+    scan_parser.add_argument("--cookie", help="Auth cookie")
     scan_parser.set_defaults(func=handle_start_scan)
 
-    # --- 'get-status' command ---
-    status_parser = subparsers.add_parser(
-        "get-status", 
-        help="Retrieve the status of a specific scan job.",
-        description="Fetches the status and results for a previously initiated scan."
-    )
-    status_parser.add_argument(
-        "job_id", 
-        help="The unique Job ID of the scan to check."
-    )
-    status_parser.set_defaults(func=handle_get_status)
-
     args = parser.parse_args()
-
-    # --- CLI Logic to handle commands ---
-    print("Authenticating with Project Sentinel API...")
     token = get_auth_token(args.username, args.password)
-    if not token:
-        sys.exit(1)
-    
-    print("Authentication successful.")
-    
-    # Call the function associated with the chosen sub-command
-    args.func(token, args)
+    if token:
+        args.func(token, args)
 
 if __name__ == "__main__":
     main()

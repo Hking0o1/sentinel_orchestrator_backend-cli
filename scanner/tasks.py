@@ -111,7 +111,7 @@ def run_security_scan(self, scan_create_json: str, user_email: str, schedule_id:
 
         scan_results_model = ScanJobUpdate(
             status=ScanStatus.COMPLETED,
-            findings=validated_findings,
+            findings=validated_findings, 
             highest_severity=highest_sev,
             attack_path_analysis=orchestration_result.get('raw_reports', {}).get('AI_Attack_Path_Analysis'),
             report_url=orchestration_result.get('report_url'),
@@ -166,15 +166,14 @@ def run_security_scan(self, scan_create_json: str, user_email: str, schedule_id:
             jira_service.create_tickets(critical_findings)
 
         # B. NOTIFICATIONS
-        project_name = str(scan_config.target_url) if scan_config.target_url else scan_config.source_code_path
-        critical_count = len(critical_findings)
-        total_count = len(scan_results_model.findings)
+        total_count = len(validated_findings)
+        critical_count = len([f for f in validated_findings if f.severity == ScanSeverity.CRITICAL or f.severity == ScanSeverity.HIGH])
         
-        raw_url = scan_results_model.report_url
-        if raw_url and raw_url.startswith("http"):
-            report_link = raw_url
-        else:
-            report_link = f"http://localhost:4000/app/scans/{self.request.id}"
+        project_name = str(scan_config.target_url) if scan_config.target_url else scan_config.source_code_path
+        
+        report_link = f"http://localhost:4000/app/scans/{self.request.id}"
+
+        print(f"[WORKER] Sending notification. Findings: {total_count}, Critical: {critical_count}")
 
         notifier.send_scan_complete(
             project_name=str(project_name),

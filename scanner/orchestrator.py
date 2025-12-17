@@ -1,6 +1,3 @@
-"""
-Ultra-Optimized Orchestrator with Correlation Engine
-"""
 import os
 import json
 import logging
@@ -90,52 +87,98 @@ def sanitize_text_for_pdf(text: str) -> str:
     return text.encode('latin-1', 'replace').decode('latin-1')
 
 def create_pdf_report(text_content: str, output_path: str):
-    """Generates a PDF from Markdown-like text content."""
-    if not PDF_AVAILABLE: return
+    """
+    Generates a professional PDF report from Markdown text.
+    Handles headers, lists, code blocks, and basic formatting.
+    """
+    if not PDF_AVAILABLE: 
+        print("PDF generation skipped (fpdf not installed)")
+        return
+
+    class PDFReport(FPDF):
+        def header(self):
+            self.set_font('Helvetica', 'B', 12)
+            self.cell(0, 10, 'Project Sentinel Security Report', 0, 1, 'C')
+            self.ln(5)
+
+        def footer(self):
+            self.set_y(-15)
+            self.set_font('Helvetica', 'I', 8)
+            self.cell(0, 10, f'Page {self.page_no()}', 0, 0, 'C')
+
+        def chapter_title(self, label):
+            self.set_font('Helvetica', 'B', 16)
+            self.set_fill_color(200, 220, 255)
+            self.cell(0, 10, label, 0, 1, 'L', fill=True)
+            self.ln(4)
+
+        def chapter_body(self, body):
+            self.set_font('Helvetica', '', 11)
+            self.multi_cell(0, 5, body)
+            self.ln()
+
     try:
-        pdf = FPDF()
+        pdf = PDFReport()
         pdf.add_page()
-        try:
-            pdf.set_font("helvetica", size=11)
-        except Exception:
-            pdf.set_font("Arial", size=11)
-            
         pdf.set_auto_page_break(auto=True, margin=15)
+        
+        # Simple Markdown Parser
+        lines = text_content.split('\n')
         in_code_block = False
         
-        # Pre-process text to remove unsupported characters
-        safe_content = sanitize_text_for_pdf(text_content)
-        
-        for line in safe_content.split('\n'):
+        for line in lines:
+            line = line.rstrip()
+            
+            # Code Blocks
             if line.startswith('```'):
                 in_code_block = not in_code_block
                 if in_code_block:
-                    pdf.set_font("courier", size=9)
+                    pdf.set_font("Courier", size=9)
                     pdf.set_fill_color(240, 240, 240)
                 else:
-                    pdf.set_font("helvetica", size=11)
-                pdf.ln(5)
+                    pdf.set_font("Helvetica", size=11)
+                continue
+            
+            if in_code_block:
+                pdf.multi_cell(0, 5, line, fill=True)
                 continue
 
+            # Headers
             if line.startswith('# '):
-                pdf.set_font(style='B', size=20); pdf.ln(10)
-                pdf.cell(0, 10, line[2:], new_x="LMARGIN", new_y="NEXT")
+                pdf.add_page() # Start main sections on new page
+                pdf.chapter_title(line[2:])
             elif line.startswith('## '):
-                pdf.set_font(style='B', size=16); pdf.ln(8)
-                pdf.cell(0, 10, line[3:], new_x="LMARGIN", new_y="NEXT")
+                pdf.set_font('Helvetica', 'B', 14)
+                pdf.ln(5)
+                pdf.cell(0, 8, line[3:], 0, 1, 'L')
             elif line.startswith('### '):
-                pdf.set_font(style='B', size=14); pdf.ln(6)
-                pdf.cell(0, 10, line[4:], new_x="LMARGIN", new_y="NEXT")
-            elif line.startswith('* '):
-                # FIX: Use hyphen instead of bullet to avoid unicode errors
-                pdf.ln(2); pdf.cell(5)
-                pdf.multi_cell(0, 5, f"- {line[2:]}")
+                pdf.set_font('Helvetica', 'B', 12)
+                pdf.ln(2)
+                pdf.cell(0, 6, line[4:], 0, 1, 'L')
+            
+            # List Items
+            elif line.strip().startswith('- ') or line.strip().startswith('* '):
+                pdf.set_font('Helvetica', '', 11)
+                pdf.set_x(20) # Indent
+                pdf.multi_cell(0, 5, f"• {line.strip()[2:]}")
+                
+            # Standard Text
             else:
-                pdf.multi_cell(0, 5, line, fill=in_code_block)
-                if not in_code_block: pdf.ln(1)
-        
+                pdf.set_font('Helvetica', '', 11)
+                # Bold logic (simple)
+                if '**' in line:
+                    parts = line.split('**')
+                    for i, part in enumerate(parts):
+                        style = 'B' if i % 2 == 1 else ''
+                        pdf.set_font('Helvetica', style, 11)
+                        pdf.write(5, part)
+                    pdf.ln()
+                else:
+                    pdf.multi_cell(0, 5, line)
+
         pdf.output(output_path)
-        logger.info(f"PDF report saved to: {output_path}")
+        logger.info(f"PDF report successfully saved to: {output_path}")
+        
     except Exception as e:
         logger.error(f"Failed to generate PDF report: {e}")
 
