@@ -3,15 +3,12 @@ import re
 import os
 import logging
 from typing import Optional, Dict, Any, List
-from pydantic import BaseModel, field_validator, ValidationError
+from pydantic import BaseModel, field_validator
 
-# Setup logger for this service
-logger = logging.getLogger("sentinel.data_pipeline")
+# REBRANDING: Updated logger to Sentrion
+logger = logging.getLogger("sentrion.data_pipeline")
 
 class VulnerabilityRecord(BaseModel):
-    """
-    Enhanced schema for AI training and Benchmark testing.
-    """
     tool_name: str
     rule_id: Optional[str] = None
     cwe: Optional[str] = None
@@ -21,7 +18,7 @@ class VulnerabilityRecord(BaseModel):
     vulnerability_type: str
     severity: str
     description: str
-    target_code: Optional[str] = None 
+    target_code: Optional[str] = None
     cvss_score: float
 
     @field_validator('severity')
@@ -46,7 +43,9 @@ class DataSanitizer:
         self.output_file = output_file
 
     def clean_text(self, text: str) -> str:
-        if not text: return "N/A"
+        if not text:
+            return "N/A"
+        # Remove newlines and excess whitespace for clean JSONL
         return re.sub(r'\s+', ' ', str(text)).strip()
 
     def _estimate_score(self, severity: str) -> float:
@@ -54,60 +53,61 @@ class DataSanitizer:
         return mapping.get(severity.upper(), 0.0)
 
     def _extract_rule_id(self, finding: Dict[str, Any]) -> str:
-        # 1. Check explicit ID fields first
-        if finding.get("cve_id"): return finding.get("cve_id")
+        if finding.get("cve_id"):
+            return finding.get("cve_id")
         
-        # 2. Check title/description for common patterns
         text_blob = (str(finding.get("title", "")) + " " + str(finding.get("description", ""))).upper()
         
+        # Checkov ID Pattern (CKV_AWS_123)
         ckv_match = re.search(r'(CKV[2]?_[A-Z]+_\d+)', text_blob)
-        if ckv_match: return ckv_match.group(1)
+        if ckv_match:
+            return ckv_match.group(1)
             
+        # CVE Pattern
         cve_match = re.search(r'(CVE-\d{4}-\d{4,})', text_blob)
-        if cve_match: return cve_match.group(1)
+        if cve_match:
+            return cve_match.group(1)
             
-        if "." in str(finding.get("title", "")) and " " not in str(finding.get("title", "")):
-             return finding.get("title")
-
+        # Fallback to title if it looks like a rule ID (no spaces, e.g., "bandit.B101")
+        title = str(finding.get("title", ""))
+        if "." in title and " " not in title:
+            return title
+            
         return "UNKNOWN_RULE"
 
     def _extract_test_case_id(self, finding: Dict[str, Any]) -> Optional[str]:
         """
-        Extracts the Test Case ID from the file path.
-        Standard for OWASP Benchmark (e.g., BenchmarkTest00001).
+        FIX: Extract Test Case ID from the nested code_location file path.
+        Crucial for OWASP Benchmark grading.
         """
-        # Look in file_path or location
-        path = finding.get("file_path") or finding.get("location") or ""
-        
-        # Pattern 1: OWASP Benchmark (BenchmarkTest02345)
+        path = ""
+        # 1. Try Code Location (SAST/IAC tools usually put it here)
+        if finding.get("code_location"):
+            path = finding["code_location"].get("file_path", "")
+        # 2. Try Endpoint Location (DAST tools)
+        elif finding.get("endpoint_location"):
+            path = finding["endpoint_location"].get("url", "")
+
+        # Pattern: OWASP Benchmark (BenchmarkTest00001)
         match = re.search(r'(BenchmarkTest\d+)', str(path), re.IGNORECASE)
         if match:
             return match.group(1)
-            
-        # Pattern 2: Generic Test files (Test1, test_01)
-        match = re.search(r'(Test\d+|test_\d+)', str(path), re.IGNORECASE)
-        if match:
-            return match.group(1)
-            
         return None
 
     def _extract_cwe(self, finding: Dict[str, Any]) -> Optional[str]:
-        """
-        Extracts CWE ID from various fields.
-        """
-        # 1. Direct field
+        # 1. Direct field (populated by our Normalizer)
         if finding.get("cwe_id"):
             val = finding.get("cwe_id")
-            # Handle list or string
-            if isinstance(val, list) and len(val) > 0: return str(val[0])
-            return str(val)
+            if isinstance(val, list) and len(val) > 0:
+                return str(val[0])
+            if val and str(val).lower() != "none":
+                return str(val)
 
-        # 2. Parse from title/description
+        # 2. FIX: Parse from text if missing (Regex fallback)
         text_blob = (str(finding.get("title", "")) + " " + str(finding.get("description", ""))).upper()
         match = re.search(r'(CWE-\d+)', text_blob)
         if match:
             return match.group(1)
-
         return None
 
     def process_and_save(self, findings: List[Dict[str, Any]]):
@@ -115,33 +115,22 @@ class DataSanitizer:
             return
 
         success_count = 0
-        
         try:
             with open(self.output_file, 'a', encoding='utf-8') as f:
                 for raw_entry in findings:
                     try:
                         severity = raw_entry.get("severity", "INFO")
                         
-                        # Extract snippet
                         code_snippet = None
-                        if "code_location" in raw_entry and raw_entry["code_location"]:
-                            loc = raw_entry["code_location"]
-                            if isinstance(loc, dict):
-                                code_snippet = loc.get("snippet")
-                            elif hasattr(loc, 'snippet'):
-                                code_snippet = loc.snippet
-                        
-                        # Extract Metadata
-                        rule_id = self._extract_rule_id(raw_entry)
-                        test_case_id = self._extract_test_case_id(raw_entry)
-                        cwe_id = self._extract_cwe(raw_entry)
-                        
+                        if raw_entry.get("code_location"):
+                            code_snippet = raw_entry["code_location"].get("snippet")
+
                         cleaned_data = {
-                            "tool_name": raw_entry.get("tool_source") or raw_entry.get("tool") or "Sentinel",
-                            "rule_id": rule_id,
-                            "cwe": cwe_id,
-                            "test_case_id": test_case_id,
-                            "expected_vulnerable": "UNKNOWN",
+                            "tool_name": raw_entry.get("tool_source") or raw_entry.get("tool") or "Sentrion",
+                            "rule_id": self._extract_rule_id(raw_entry),
+                            "cwe": self._extract_cwe(raw_entry),
+                            "test_case_id": self._extract_test_case_id(raw_entry),
+                            "expected_vulnerable": "UNKNOWN", # To be filled by benchmark grader
                             "detected": True,
                             "vulnerability_type": self.clean_text(raw_entry.get("title", "")),
                             "severity": severity,
@@ -153,18 +142,11 @@ class DataSanitizer:
                         record = VulnerabilityRecord(**cleaned_data)
                         f.write(json.dumps(record.model_dump()) + "\n")
                         success_count += 1
-                        
-                    except ValidationError as ve:
-                        logger.warning(f"Skipping invalid record: {ve}")
+                    except Exception:
                         continue
-                    except Exception as e:
-                        logger.error(f"Error processing single finding: {e}")
-                        continue
-                        
+            
             if success_count > 0:
-                logger.info(f"Data Pipeline: Saved {success_count} records to {self.output_file}")
+                logger.info(f"Data Pipeline: Saved {success_count} records.")
                 
         except Exception as e:
-            logger.error(f"Data Pipeline Critical Failure: {e}")
-
-data_sanitizer = DataSanitizer()
+            logger.error(f"Data Pipeline Failure: {e}")
