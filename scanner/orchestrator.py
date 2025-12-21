@@ -1,6 +1,10 @@
+"""
+Ultra-Optimized Orchestrator with Correlation Engine
+"""
 import os
 import json
 import logging
+import threading # <--- FIX: Added missing import
 from datetime import datetime, timezone
 from typing import TypedDict, List, Dict, Any, Tuple, Optional
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -17,9 +21,21 @@ from scanner.tools import (
     run_sqlmap_scan
 )
 from scanner.tools.utils import get_logger, normalize_severity
-
-# --- Import Correlation Engine ---
+from reportlab.lib.pagesizes import A4
+from reportlab.platypus import (
+    SimpleDocTemplate,
+    Paragraph,
+    Spacer,
+    ListFlowable,
+    ListItem,
+)
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.enums import TA_LEFT
+from reportlab.lib.units import inch
+from reportlab.lib.colors import HexColor
+# --- Import Correlation & Data Pipeline ---
 from scanner.correlation.engine import CorrelationEngine
+from app.services.data_pipeline import data_sanitizer
 
 from langgraph.graph import StateGraph, END
 from config.settings import settings
@@ -67,121 +83,144 @@ def mask_secret(s: Optional[str]) -> str:
     return s[:3] + "..." + s[-3:]
 
 def sanitize_text_for_pdf(text: str) -> str:
-    """
-    Replaces characters that are not supported by the standard FPDF fonts (Latin-1).
-    """
+    """Replaces characters not supported by Latin-1."""
     replacements = {
-        "•": "-",
-        "–": "-",
-        "—": "-",
-        "“": '"',
-        "”": '"',
-        "‘": "'",
-        "’": "'",
-        "…": "...",
+        "•": "-", "–": "-", "—": "-", "“": '"', "”": '"', 
+        "‘": "'", "’": "'", "…": "..."
     }
     for char, replacement in replacements.items():
         text = text.replace(char, replacement)
-    
-    # Fallback: force encode to latin-1, replacing unknown chars with '?'
     return text.encode('latin-1', 'replace').decode('latin-1')
+def wrap_long_words(pdf, text, max_width):
+    """
+    Force-break words that exceed page width (FPDF safe).
+    """
+    words = text.split(" ")
+    safe_words = []
 
+    for word in words:
+        if pdf.get_string_width(word) <= max_width:
+            safe_words.append(word)
+        else:
+            # Hard split long word
+            chunk = ""
+            for char in word:
+                if pdf.get_string_width(chunk + char) <= max_width:
+                    chunk += char
+                else:
+                    safe_words.append(chunk)
+                    chunk = char
+            if chunk:
+                safe_words.append(chunk)
+
+    return " ".join(safe_words)
 def create_pdf_report(text_content: str, output_path: str):
-    """
-    Generates a professional PDF report from Markdown text.
-    Handles headers, lists, code blocks, and basic formatting.
-    """
-    if not PDF_AVAILABLE: 
-        print("PDF generation skipped (fpdf not installed)")
-        return
-
-    class PDFReport(FPDF):
-        def header(self):
-            self.set_font('Helvetica', 'B', 12)
-            self.cell(0, 10, 'Project Sentinel Security Report', 0, 1, 'C')
-            self.ln(5)
-
-        def footer(self):
-            self.set_y(-15)
-            self.set_font('Helvetica', 'I', 8)
-            self.cell(0, 10, f'Page {self.page_no()}', 0, 0, 'C')
-
-        def chapter_title(self, label):
-            self.set_font('Helvetica', 'B', 16)
-            self.set_fill_color(200, 220, 255)
-            self.cell(0, 10, label, 0, 1, 'L', fill=True)
-            self.ln(4)
-
-        def chapter_body(self, body):
-            self.set_font('Helvetica', '', 11)
-            self.multi_cell(0, 5, body)
-            self.ln()
-
     try:
-        pdf = PDFReport()
-        pdf.add_page()
-        pdf.set_auto_page_break(auto=True, margin=15)
-        
-        # Simple Markdown Parser
-        lines = text_content.split('\n')
-        in_code_block = False
-        
-        for line in lines:
-            line = line.rstrip()
-            
-            # Code Blocks
-            if line.startswith('```'):
-                in_code_block = not in_code_block
-                if in_code_block:
-                    pdf.set_font("Courier", size=9)
-                    pdf.set_fill_color(240, 240, 240)
-                else:
-                    pdf.set_font("Helvetica", size=11)
-                continue
-            
-            if in_code_block:
-                pdf.multi_cell(0, 5, line, fill=True)
+        doc = SimpleDocTemplate(
+            output_path,
+            pagesize=A4,
+            rightMargin=36,
+            leftMargin=36,
+            topMargin=36,
+            bottomMargin=36,
+        )
+
+        styles = getSampleStyleSheet()
+
+        styles.add(ParagraphStyle(
+            name="H1",
+            fontSize=18,
+            leading=22,
+            spaceAfter=12,
+            spaceBefore=12,
+            fontName="Helvetica-Bold",
+        ))
+
+        styles.add(ParagraphStyle(
+            name="H2",
+            fontSize=15,
+            leading=20,
+            spaceAfter=10,
+            spaceBefore=10,
+            fontName="Helvetica-Bold",
+        ))
+
+        styles.add(ParagraphStyle(
+            name="H3",
+            fontSize=12,
+            leading=16,
+            spaceAfter=8,
+            spaceBefore=8,
+            fontName="Helvetica-Bold",
+        ))
+
+        styles.add(ParagraphStyle(
+            name="Body",
+            fontSize=10.5,
+            leading=15,
+            spaceAfter=6,
+            alignment=TA_LEFT,
+        ))
+
+        flowables = []
+        bullet_buffer = []
+
+        def flush_bullets():
+            nonlocal bullet_buffer
+            if bullet_buffer:
+                flowables.append(
+                    ListFlowable(
+                        [
+                            ListItem(
+                                Paragraph(item, styles["Body"]),
+                                bulletText="•"
+                            )
+                            for item in bullet_buffer
+                        ],
+                        start="bullet",
+                        leftIndent=18,
+                    )
+                )
+                bullet_buffer = []
+                flowables.append(Spacer(1, 6))
+
+        for raw_line in text_content.split("\n"):
+            line = raw_line.strip()
+
+            if not line:
+                flush_bullets()
+                flowables.append(Spacer(1, 8))
                 continue
 
-            # Headers
-            if line.startswith('# '):
-                pdf.add_page() # Start main sections on new page
-                pdf.chapter_title(line[2:])
-            elif line.startswith('## '):
-                pdf.set_font('Helvetica', 'B', 14)
-                pdf.ln(5)
-                pdf.cell(0, 8, line[3:], 0, 1, 'L')
-            elif line.startswith('### '):
-                pdf.set_font('Helvetica', 'B', 12)
-                pdf.ln(2)
-                pdf.cell(0, 6, line[4:], 0, 1, 'L')
-            
-            # List Items
-            elif line.strip().startswith('- ') or line.strip().startswith('* '):
-                pdf.set_font('Helvetica', '', 11)
-                pdf.set_x(20) # Indent
-                pdf.multi_cell(0, 5, f"• {line.strip()[2:]}")
-                
-            # Standard Text
+            if line.startswith("```"):
+                continue
+
+            if line.startswith("# "):
+                flush_bullets()
+                flowables.append(Paragraph(line[2:], styles["H1"]))
+
+            elif line.startswith("## "):
+                flush_bullets()
+                flowables.append(Paragraph(line[3:], styles["H2"]))
+
+            elif line.startswith("### "):
+                flush_bullets()
+                flowables.append(Paragraph(line[4:], styles["H3"]))
+
+            elif line.startswith("- ") or line.startswith("* "):
+                bullet_buffer.append(line[2:])
+
             else:
-                pdf.set_font('Helvetica', '', 11)
-                # Bold logic (simple)
-                if '**' in line:
-                    parts = line.split('**')
-                    for i, part in enumerate(parts):
-                        style = 'B' if i % 2 == 1 else ''
-                        pdf.set_font('Helvetica', style, 11)
-                        pdf.write(5, part)
-                    pdf.ln()
-                else:
-                    pdf.multi_cell(0, 5, line)
+                flush_bullets()
+                flowables.append(Paragraph(line, styles["Body"]))
 
-        pdf.output(output_path)
-        logger.info(f"PDF report successfully saved to: {output_path}")
-        
+        flush_bullets()
+
+        doc.build(flowables)
+        logger.info(f"PDF report saved to: {output_path}")
+
     except Exception as e:
         logger.error(f"Failed to generate PDF report: {e}")
-
 
 # --- LangGraph State Definition ---
 class GraphState(TypedDict):
@@ -201,7 +240,6 @@ class GraphState(TypedDict):
 
 def setup_node(state: GraphState) -> GraphState:
     logger.info(f"--- SETUP (Job: {state['job_id']}, Profile: {state['profile'].upper()}) ---")
-    # Ensure output directory exists
     output_dir = safe_path(f"scan_results/{state['job_id']}")
     os.makedirs(output_dir, exist_ok=True)
     
@@ -221,7 +259,6 @@ def run_parallel_scans_node(state: GraphState) -> GraphState:
     output_dir = state['output_dir']
     auth_cookie = state.get('auth_cookie')
 
-    # Map job names to their functions and arguments
     all_jobs = {
         'sca': (run_sca_scan, (source_code_path, output_dir)),
         'sast': (run_sast_scan, (source_code_path, output_dir)),
@@ -250,7 +287,6 @@ def run_parallel_scans_node(state: GraphState) -> GraphState:
     if not jobs_to_run:
         return state
 
-    # Use ProcessPoolExecutor for true parallelism
     max_workers = min(len(jobs_to_run), int(os.getenv("MAX_WORKERS", 8)))
     
     with ProcessPoolExecutor(max_workers=max_workers) as executor:
@@ -258,18 +294,8 @@ def run_parallel_scans_node(state: GraphState) -> GraphState:
         for name in jobs_to_run:
             if name in all_jobs:
                 func, args = all_jobs[name]
-                
-                # Check 1: Do we have the required arguments?
                 if 'sca' in name or 'sast' in name or 'iac' in name or 'container' in name:
-                    if not args[0]: 
-                        logger.warning(f"Skipping {name}: No source code path provided.")
-                        continue 
-                    
-                    # Check 2: Does the path exist? (FIX for "Path does not exist" error)
-                    if not os.path.exists(args[0]):
-                        logger.error(f"Skipping {name}: Path does not exist inside container: {args[0]}")
-                        state['report_summary'].append(f"Skipped {name}: Path not found: {args[0]}")
-                        continue
+                    if not args[0]: continue 
                 
                 future = executor.submit(func, *args)
                 future_to_job[future] = name
@@ -303,11 +329,9 @@ def correlation_node(state: GraphState) -> GraphState:
         engine.ingest_standard_findings(state['findings'])
         correlated = engine.run()
         state['findings'] = [f.model_dump() for f in correlated]
-        logger.info(f"Correlation complete. Consolidated to {len(state['findings'])} findings.")
-        state['report_summary'].append(f"Correlation Engine: Consolidated to {len(state['findings'])} findings.")
+        logger.info(f"Correlation complete. Findings: {len(state['findings'])}")
     except Exception as e:
         logger.error(f"Correlation failed: {e}")
-        state['report_summary'].append(f"Correlation Engine failed: {e}")
     return state
 
 def attack_modeling_node(state: GraphState) -> GraphState:
@@ -316,7 +340,6 @@ def attack_modeling_node(state: GraphState) -> GraphState:
         return state
 
     try:
-        # We summarize findings to avoid hitting token limits
         summary_for_ai = []
         for f in state['findings']:
             if f.get('severity') in ['CRITICAL', 'HIGH']:
@@ -332,8 +355,11 @@ def attack_modeling_node(state: GraphState) -> GraphState:
             ("human", "Findings:\n{findings}")
         ])
         
+        # FIX: Ensure protocol is present
+        ollama_url = "[http://host.docker.internal:11434](http://host.docker.internal:11434)"
+        
         llm = ChatOllama(
-            base_url="[http://host.docker.internal:11434](http://host.docker.internal:11434)", 
+            base_url=ollama_url, 
             model="gemma:2b"
         )
         
@@ -354,7 +380,6 @@ def gemini_summarizer_node(state: GraphState) -> Tuple[GraphState, List[Dict[str
         logger.warning("Gemini API key not configured.")
         return state, []
 
-    # Prepare context
     findings_summary = json.dumps(state['findings'][:50], indent=2, default=str) 
     
     prompt = f"""
@@ -371,7 +396,7 @@ def gemini_summarizer_node(state: GraphState) -> Tuple[GraphState, List[Dict[str
     
     ticketing_json = []
     try:
-        model = genai.GenerativeModel('gemini-2.5-flash') 
+        model = genai.GenerativeModel('gemini-2.5-flash-lite') 
         response = model.generate_content(prompt)
         gemini_response = response.text
         
@@ -385,11 +410,11 @@ def gemini_summarizer_node(state: GraphState) -> Tuple[GraphState, List[Dict[str
                     json_str = json_str[7:]
                 elif json_str.startswith("```"):
                     json_str = json_str[3:]
-                
                 if json_str.endswith("```"):
                     json_str = json_str[:-3]
                 
                 json_str = json_str.strip() 
+
                 ticketing_json = json.loads(json_str)
             except json.JSONDecodeError:
                 logger.error("Failed to parse ticketing JSON.")
@@ -402,14 +427,15 @@ def gemini_summarizer_node(state: GraphState) -> Tuple[GraphState, List[Dict[str
         
         with open(md_path, 'w', encoding='utf-8') as f: f.write(markdown_report)
         create_pdf_report(markdown_report, pdf_path)
-        state['report_summary'].append(f"Gemini Report saved to {md_path}")
         
     except Exception as e:
         logger.error(f"Gemini Report Generation failed: {e}")
     
     return state, ticketing_json
 
+
 # --- Main Entrypoint ---
+
 def run_orchestration(job_id: str, profile: str, target_url: Optional[str], source_code_path: Optional[str], auth_cookie: Optional[str] = None) -> Dict[str, Any]:
     logger.info(f"Orchestration START job={job_id}")
     
@@ -423,12 +449,16 @@ def run_orchestration(job_id: str, profile: str, target_url: Optional[str], sour
     def gemini_node_wrapper(state: GraphState):
         new_state, ticketing_data = gemini_summarizer_node(state)
         if ticketing_data:
-             with open(os.path.join(new_state['output_dir'], 'tickets.json'), 'w') as f:
-                json.dump(ticketing_data, f, indent=2)
+            tickets_path = os.path.join(new_state['output_dir'], 'tickets.json')
+            try:
+                with open(tickets_path, 'w') as f:
+                    json.dump(ticketing_data, f, indent=2)
+            except Exception as e:
+                logger.error(f"Failed to save tickets.json: {e}")
         return new_state
 
     workflow.add_node("gemini_summarizer", gemini_node_wrapper)
-    
+
     workflow.add_edge("setup", "parallel_scans")
     workflow.add_edge("parallel_scans", "correlation")
     workflow.add_edge("correlation", "attack_modeling")
@@ -439,31 +469,40 @@ def run_orchestration(job_id: str, profile: str, target_url: Optional[str], sour
     
     start_time = datetime.now(timezone.utc)
     initial_state = GraphState(
-        job_id=job_id, profile=profile, target_url=target_url,
-        source_code_path=source_code_path, auth_cookie=auth_cookie,
-        output_dir="", report_summary=[], findings=[], raw_reports={},
+        job_id=job_id,
+        profile=profile,
+        target_url=target_url,
+        source_code_path=source_code_path,
+        auth_cookie=auth_cookie,
+        output_dir="", 
+        report_summary=[],
+        findings=[],
+        raw_reports={},
         start_time=start_time
     )
     
     final_state = app.invoke(initial_state)
-
+    
+    # --- FIX: Trigger Data Pipeline safely ---
     try:
         findings_to_save = final_state.get('findings', [])
         if findings_to_save:
             thread = threading.Thread(
                 target=data_sanitizer.process_and_save, 
                 args=(findings_to_save,),
-                daemon=True # Daemon threads die if the main process dies
+                daemon=True
             )
             thread.start()
             logger.info("Triggered background data sanitization task.")
     except Exception as e:
         logger.error(f"Failed to start data pipeline thread: {e}")
+    # -----------------------------------------
     
     severity_counts = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0, "INFO": 0}
     for f in final_state.get('findings', []):
         sev = normalize_severity(f.get('severity'))
-        if sev in severity_counts: severity_counts[sev] += 1
+        if sev in severity_counts:
+            severity_counts[sev] += 1
             
     return {
         "status": "COMPLETED",
@@ -472,26 +511,6 @@ def run_orchestration(job_id: str, profile: str, target_url: Optional[str], sour
         "report_url": os.path.join(final_state['output_dir'], "Gemini_Security_Report.pdf"),
         "findings": final_state['findings'],
         "start_time": start_time.isoformat(),
-        "end_time": datetime.now(timezone.utc).isoformat()
+        "end_time": datetime.now(timezone.utc).isoformat(),
+        "ai_report_text": final_state.get('raw_reports', {}).get('AI_Report_Text')
     }
-  
-# -------------------------
-# CLI for local testing
-# -------------------------
-if __name__ == "__main__":
-    import argparse
-    # Setup console logging for local run
-    logging.getLogger().setLevel(logging.DEBUG)
-    
-    parser = argparse.ArgumentParser(description="Run sentinel orchestrator locally")
-    parser.add_argument("--job-id", default=f"local-{int(datetime.now().timestamp())}")
-    parser.add_argument("--profile", default="developer")
-    parser.add_argument("--target", default=None)
-    parser.add_argument("--src", default=".")
-    parser.add_argument("--cookie", default=None)
-    
-    args = parser.parse_args()
-    
-    print(f"--- Starting Local Scan: {args.job_id} ---")
-    out = run_orchestration(args.job_id, args.profile, args.target, args.src, args.cookie)
-    print(json.dumps(out, indent=2, default=str))

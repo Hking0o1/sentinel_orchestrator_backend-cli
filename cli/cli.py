@@ -51,11 +51,11 @@ def get_auth_token(username, password):
         return response.json()["access_token"]
     except requests.exceptions.HTTPError as e:
         if e.response.status_code == 401:
-            print_err("Authentication failed: Incorrect username or password.")
+            print_error("Authentication failed: Incorrect username or password.")
         else:
-            print_err(f"Authentication error: {e.response.status_code} {e.response.text}")
+            print_error(f"Authentication error: {e.response.status_code} {e.response.text}")
     except requests.exceptions.RequestException as e:
-        print_err(f"Failed to connect to backend at {token_url}. Is it running?")
+        print_error(f"Failed to connect to backend at {token_url}. Is it running?")
     return None
 
 def handle_start_scan(token, args):

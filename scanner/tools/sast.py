@@ -6,9 +6,9 @@ from .utils import (
     is_tool_installed, 
     normalize_severity, 
     ensure_dir, 
-    get_logger, # <-- Added import
+    get_logger,
     SCAN_EXCLUDE_DIRS,
-    SHORT_CMD_TIMEOUT
+    DEFAULT_CMD_TIMEOUT  # <-- FIX: Import DEFAULT_CMD_TIMEOUT (20 mins)
 )
 
 log = get_logger("scanner.tools.sast")
@@ -25,56 +25,57 @@ def _create_ignore_file(output_dir: str):
 
 def run_sast_scan(src_path: str, output_dir: str) -> Dict[str, Any]:
     """
-    Runs Semgrep via Docker to find security flaws in the source code.
+    Runs Semgrep (installed via pipx) to find security flaws.
     """
     log.info(f"Starting Semgrep scan on: {src_path}")
     
-    # We check for 'docker' instead of 'semgrep' now
-    if not is_tool_installed("docker"):
-        log.error("Tool 'docker' not found. Semgrep requires Docker.")
-        return {
-            "findings": [], 
-            "raw_report": ("SAST_Semgrep", "Docker missing")
-        }
+    # Determine semgrep executable path
+    semgrep_exec = "semgrep"
+    if not is_tool_installed("semgrep"):
+        # Fallback for Docker/Codespaces pipx locations
+        common_paths = [
+            "/root/.local/bin/semgrep",
+            "/home/vscode/.local/bin/semgrep", 
+            "/home/ubuntu/.local/bin/semgrep"
+        ]
+        found_path = None
+        for p in common_paths:
+            if os.path.exists(p):
+                found_path = p
+                break
+        
+        if found_path:
+            semgrep_exec = found_path
+        else:
+            log.error("Tool 'semgrep' not found. Ensure it is installed via pipx.")
+            return {
+                "findings": [], 
+                "raw_report": ("SAST_Semgrep", "Semgrep missing")
+            }
 
     ensure_dir(output_dir)
     json_report_path = os.path.join(output_dir, "semgrep_report.json")
     log_file = os.path.join(output_dir, "semgrep-scan.log")
     
-    # Generate ignore file (we'll mount this too)
+    # Generate ignore file
     ignore_file = _create_ignore_file(output_dir)
     
-    # Get absolute paths for mounting
-    abs_src = os.path.abspath(src_path)
-    abs_out_dir = os.path.abspath(output_dir)
-    abs_ignore = os.path.abspath(ignore_file)
-
-    # Build Docker command
-    # We mount the source code to /src
-    # We mount the output directory to /out
-    # We mount the ignore file to /out/.semgrepignore
+    # Build Command
     cmd = [
-        "docker", "run", "--rm",
-        "--user", "0", # Run as root to avoid permission issues
-        "-v", f"{abs_src}:/src:ro",
-        "-v", f"{abs_out_dir}:/out:rw",
-        "semgrep/semgrep", # Official image
-        "semgrep", "scan",
+        semgrep_exec, "scan",
         "--config", "auto",
         "--json",
-        "--output", "/out/semgrep_report.json",
-        "--exclude", ".git",
-        "--exclude", "node_modules",
-        "--verbose"
+        "--output", json_report_path,
+        "--verbose",
+        "--no-git-ignore", 
+        src_path
     ]
-    
-    # Add other excludes manually since .semgrepignore mount can be tricky
-    for exclude in SCAN_EXCLUDE_DIRS:
-         cmd.extend(["--exclude", exclude])
 
-    log.info(f"Scan running. Logs: {log_file}")
+    log.info(f"Scan running (Timeout: {DEFAULT_CMD_TIMEOUT}s). Logs: {log_file}")
     
-    success, output = run_subprocess(cmd, timeout=SHORT_CMD_TIMEOUT)
+    # --- FIX: Use DEFAULT_CMD_TIMEOUT (20 mins) instead of SHORT_CMD_TIMEOUT ---
+    success, output = run_subprocess(cmd, timeout=DEFAULT_CMD_TIMEOUT)
+    # ---------------------------------------------------------------------------
     
     # Save raw logs
     try:

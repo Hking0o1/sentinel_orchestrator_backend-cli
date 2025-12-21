@@ -41,8 +41,7 @@ def run_iac_scan(src_path: str, output_dir: str) -> Dict[str, Any]:
 
     for exclude in SCAN_EXCLUDE_DIRS:
         cmd.extend(["--skip-path", exclude])
-            
-    cmd.extend(["| tee \"{output_file}\""])
+
 
     # Run the scan
     success, output = run_subprocess(cmd, timeout=SHORT_CMD_TIMEOUT)

@@ -65,7 +65,11 @@ RUN apt-get purge -y git unzip && \
     apt-get autoremove -y && \
     rm -rf /var/lib/apt/lists/*
 
-# --- Install Python Dependencies (including Checkov & Semgrep) ---
+
+RUN pip install pipx && \
+    pipx install semgrep
+
+# --- Install Python Dependencies (including Checkov) ---
 COPY requirements.txt .
 RUN python -m venv /venv
 ENV PATH="/venv/bin:$PATH"
