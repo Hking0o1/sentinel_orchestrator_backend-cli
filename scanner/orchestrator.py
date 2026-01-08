@@ -287,6 +287,7 @@ def run_parallel_scans_node(state: GraphState) -> GraphState:
     if not jobs_to_run:
         return state
 
+    # Use ProcessPoolExecutor for true parallelism
     max_workers = min(len(jobs_to_run), int(os.getenv("MAX_WORKERS", 8)))
     
     with ProcessPoolExecutor(max_workers=max_workers) as executor:
@@ -376,97 +377,138 @@ def attack_modeling_node(state: GraphState) -> GraphState:
 
 def gemini_summarizer_node(state: GraphState) -> Tuple[GraphState, List[Dict[str, Any]]]:
     logger.info("--- AI FINAL REPORT (GEMINI) ---")
+    
+    total_findings = len(state['findings'])
+    severity_counts = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0, "INFO": 0}
+    top_findings = []
+
+    # 1. Calculate Stats & Pick Top 50
+    for f in state['findings']:
+        sev = normalize_severity(f.get('severity'))
+        if sev in severity_counts:
+            severity_counts[sev] += 1
+        
+        # Priority Queue Logic (Simplified)
+        if sev in ["CRITICAL", "HIGH"] and len(top_findings) < 50:
+            top_findings.append(f)
+    
+    # Fill remaining slots if needed
+    if len(top_findings) < 50:
+        remaining = 50 - len(top_findings)
+        top_findings.extend(state['findings'][:remaining])
+
     if not GEMINI_AVAILABLE:
-        logger.warning("Gemini API key not configured.")
+        # Fallback if no AI
+        create_pdf_report("## Scan Complete\nNo AI Analysis Available.", os.path.join(state['output_dir'], "Report.pdf"))
         return state, []
 
-    findings_summary = json.dumps(state['findings'][:50], indent=2, default=str) 
-    
+    # 2. Prepare Context
+    context_json = json.dumps({
+        "total_findings_count": total_findings,
+        "severity_breakdown": severity_counts,
+        "top_priority_findings": top_findings
+    }, indent=2, default=str)
+
     prompt = f"""
-    You are a Principal Application Security Engineer. Write a professional penetration test report based on these findings.
+    You are a Principal Security Engineer. Write a penetration test report.
     
-    **Scan Data:**
-    {findings_summary}
+    **Scan Statistics:**
+    Total Findings: {total_findings}
+    Breakdown: {severity_counts}
+    
+    **Top 50 Findings Detail:**
+    {context_json}
 
     **Instructions:**
-    1. Generate a Markdown report with: Executive Summary, detailed findings grouped by severity, and a prioritized remediation plan.
-    2. After the report, add the separator ---TICKETING-JSON---
-    3. Then provide a JSON array of tickets for CRITICAL/HIGH issues. Format: {{ "title": "...", "priority": "...", "description": "...", "remediation": "..." }}
+    1. Write an Executive Summary referencing the total count and risk level.
+    2. Detail the top findings provided.
+    3. If total findings > 50, explicitly mention that full details are in the raw data export.
+    4. Provide a Prioritized Remediation Plan.
+    5. End with ---TICKETING-JSON--- and a JSON array of tickets for the top findings.
     """
-    
+
     ticketing_json = []
     try:
-        model = genai.GenerativeModel('gemini-2.5-flash-lite') 
+        model = genai.GenerativeModel('gemini-2.5-flash')
         response = model.generate_content(prompt)
         gemini_response = response.text
         
         markdown_report = gemini_response
+        
+        # Extract Ticket JSON
         if "---TICKETING-JSON---" in gemini_response:
             parts = gemini_response.split("---TICKETING-JSON---")
             markdown_report = parts[0]
             try:
                 json_str = parts[1].strip()
                 if json_str.startswith("```json"):
-                    json_str = json_str[7:]
-                elif json_str.startswith("```"):
-                    json_str = json_str[3:]
-                if json_str.endswith("```"):
-                    json_str = json_str[:-3]
-                
-                json_str = json_str.strip() 
-
+                    json_str = json_str[7:-3]
                 ticketing_json = json.loads(json_str)
             except json.JSONDecodeError:
-                logger.error("Failed to parse ticketing JSON.")
+                pass
 
-        # Store markdown for frontend use
         state['raw_reports']['AI_Report_Text'] = markdown_report
-
-        md_path = os.path.join(state['output_dir'], "Gemini_Security_Report.md")
-        pdf_path = os.path.join(state['output_dir'], "Gemini_Security_Report.pdf")
         
-        with open(md_path, 'w', encoding='utf-8') as f: f.write(markdown_report)
+        # Save Reports
+        md_path = os.path.join(state['output_dir'], "Sentrion_Security_Report.md")
+        pdf_path = os.path.join(state['output_dir'], "Sentrion_Security_Report.pdf")
+        
+        with open(md_path, 'w', encoding='utf-8') as f:
+            f.write(markdown_report)
+            
         create_pdf_report(markdown_report, pdf_path)
         
     except Exception as e:
         logger.error(f"Gemini Report Generation failed: {e}")
-    
+
     return state, ticketing_json
 
+def gemini_node_wrapper(state: GraphState):
+    """Wrapper to handle the tuple return and threading"""
+    new_state, ticketing_data = gemini_summarizer_node(state)
+    
+    # Threaded data pipeline trigger to prevent blocking
+    try:
+        findings_to_save = new_state.get('findings', [])
+        if findings_to_save:
+            thread = threading.Thread(
+                target=data_sanitizer.process_and_save, 
+                args=(findings_to_save,), 
+                daemon=True
+            )
+            thread.start()
+    except Exception:
+        pass
+        
+    return new_state
 
 # --- Main Entrypoint ---
 
 def run_orchestration(job_id: str, profile: str, target_url: Optional[str], source_code_path: Optional[str], auth_cookie: Optional[str] = None) -> Dict[str, Any]:
     logger.info(f"Orchestration START job={job_id}")
     
+    # Build Graph
     workflow = StateGraph(GraphState)
     workflow.set_entry_point("setup")
+    
     workflow.add_node("setup", setup_node)
     workflow.add_node("parallel_scans", run_parallel_scans_node)
+    workflow.add_node("run_plugins", run_plugins_node)   # <--- ADDED
     workflow.add_node("correlation", correlation_node)
     workflow.add_node("attack_modeling", attack_modeling_node)
-    
-    def gemini_node_wrapper(state: GraphState):
-        new_state, ticketing_data = gemini_summarizer_node(state)
-        if ticketing_data:
-            tickets_path = os.path.join(new_state['output_dir'], 'tickets.json')
-            try:
-                with open(tickets_path, 'w') as f:
-                    json.dump(ticketing_data, f, indent=2)
-            except Exception as e:
-                logger.error(f"Failed to save tickets.json: {e}")
-        return new_state
-
     workflow.add_node("gemini_summarizer", gemini_node_wrapper)
 
+    # Edges
     workflow.add_edge("setup", "parallel_scans")
-    workflow.add_edge("parallel_scans", "correlation")
+    workflow.add_edge("parallel_scans", "run_plugins")   # Scans -> Plugins
+    workflow.add_edge("run_plugins", "correlation")      # Plugins -> Correlation
     workflow.add_edge("correlation", "attack_modeling")
     workflow.add_edge("attack_modeling", "gemini_summarizer")
     workflow.add_edge("gemini_summarizer", END)
-    
+
     app = workflow.compile()
-    
+
+    # Initial State
     start_time = datetime.now(timezone.utc)
     initial_state = GraphState(
         job_id=job_id,
@@ -474,41 +516,28 @@ def run_orchestration(job_id: str, profile: str, target_url: Optional[str], sour
         target_url=target_url,
         source_code_path=source_code_path,
         auth_cookie=auth_cookie,
-        output_dir="", 
+        output_dir="",
         report_summary=[],
         findings=[],
         raw_reports={},
         start_time=start_time
     )
-    
+
+    # Invoke
     final_state = app.invoke(initial_state)
-    
-    # --- FIX: Trigger Data Pipeline safely ---
-    try:
-        findings_to_save = final_state.get('findings', [])
-        if findings_to_save:
-            thread = threading.Thread(
-                target=data_sanitizer.process_and_save, 
-                args=(findings_to_save,),
-                daemon=True
-            )
-            thread.start()
-            logger.info("Triggered background data sanitization task.")
-    except Exception as e:
-        logger.error(f"Failed to start data pipeline thread: {e}")
-    # -----------------------------------------
-    
+
+    # Statistics for API return
     severity_counts = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0, "INFO": 0}
     for f in final_state.get('findings', []):
         sev = normalize_severity(f.get('severity'))
         if sev in severity_counts:
             severity_counts[sev] += 1
-            
+
     return {
         "status": "COMPLETED",
         "output_dir": final_state['output_dir'],
         "findings_summary": severity_counts,
-        "report_url": os.path.join(final_state['output_dir'], "Gemini_Security_Report.pdf"),
+        "report_url": os.path.join(final_state['output_dir'], "Sentrion_Security_Report.pdf"),
         "findings": final_state['findings'],
         "start_time": start_time.isoformat(),
         "end_time": datetime.now(timezone.utc).isoformat(),

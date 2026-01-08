@@ -138,7 +138,7 @@ services:
         condition: service_healthy
     networks:
       - sentinel_net
-    # FIX: Removed comments to prevent YAML folding issues that were breaking the script logic
+    
     entrypoint: >
       /bin/sh -c "
       until /usr/bin/mc alias set myminio http://minio:9000 ${MINIO_ROOT_USER} ${MINIO_ROOT_PASSWORD}; do
