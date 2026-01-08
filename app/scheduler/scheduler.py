@@ -8,6 +8,18 @@ from .resources import ResourceBudget
 from .registry import InFlightRegistry
 from .metrics import SchedulerMetrics
 
+
+
+BASE_COST = {
+    "LIGHT": 10,
+    "MEDIUM": 20,
+    "HEAVY": 40,
+    "POST_PROCESS": 60,
+}
+
+MEMORY_WEIGHT = 3
+RETRY_WEIGHT = 15
+
 class ScanScheduler:
     """
     Authoritative scheduler for Sentinel.
@@ -60,7 +72,22 @@ class ScanScheduler:
                 self.children.setdefault(parent, set()).add(td.task_id)
 
         self.metrics.inc("tasks_submitted_total", len(self.tasks))
-        
+    
+    def _compute_priority(self, task_id: str) -> int:
+        """
+        Compute scheduling priority for a READY task.
+        Lower value = higher priority.
+        """
+
+        td = self.tasks[task_id]
+        rt = self.runtime[task_id]
+
+        base = BASE_COST.get(td.cost_tier, 50)
+        memory_penalty = td.cost_units * MEMORY_WEIGHT
+        retry_penalty = rt.retry_count * RETRY_WEIGHT
+
+        return base + memory_penalty + retry_penalty
+       
     def initialize_ready_tasks(self) -> None:
         """
         Mark root DAG nodes READY.
@@ -76,11 +103,14 @@ class ScanScheduler:
             return
 
         rt.state = TaskState.READY
-        self.queue.push(priority=0, task_id=task_id)
+        priority = self._compute_priority(task_id)
+        self.queue.push(priority=priority, task_id=task_id)
 
         self.metrics.inc("tasks_ready_total")
         self.metrics.set_gauge("ready_queue_size", len(self.queue))
         
+    
+   
     def schedule_once(
         self,
         dispatch_fn: Callable[[str, TaskDescriptor], None]
@@ -168,7 +198,8 @@ class ScanScheduler:
 
         if rt.retry_count <= td.retries_allowed:
             rt.state = TaskState.READY
-            self.queue.push(priority=rt.retry_count, task_id=task_id)
+            priority = self._compute_priority(task_id)
+            self.queue.push(priority=priority, task_id=task_id)
             self.metrics.inc("tasks_retried_total")
         else:
             rt.state = TaskState.FAILED
