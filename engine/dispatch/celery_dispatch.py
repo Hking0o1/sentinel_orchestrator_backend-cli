@@ -18,7 +18,7 @@ from typing import Callable
 from engine.scheduler.scheduler import ScanScheduler
 from engine.scheduler.dag import TaskDescriptor
 
-from scanner import tasks as scanner_tasks
+from scanner import tasks_backup as scanner_tasks
 
 
 class CeleryDispatcher:
