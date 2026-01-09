@@ -8,8 +8,14 @@ from .utils import (
     ensure_dir, 
     get_logger,
     SCAN_EXCLUDE_DIRS,
-    DEFAULT_CMD_TIMEOUT  # <-- FIX: Import DEFAULT_CMD_TIMEOUT (20 mins)
+    DEFAULT_CMD_TIMEOUT  
 )
+from scanner.tools.registry import register_tool
+
+COST_METADATA = {
+    "tier": "MEDIUM",
+    "units": 3,
+}
 
 log = get_logger("scanner.tools.sast")
 
@@ -109,3 +115,6 @@ def run_sast_scan(src_path: str, output_dir: str) -> Dict[str, Any]:
             log.error(f"Failed to parse report: {e}")
 
     return {"findings": findings, "raw_report": ("SAST_Semgrep", output)}
+
+
+register_tool("SAST", run)
