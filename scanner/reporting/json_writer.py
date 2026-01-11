@@ -51,3 +51,4 @@ def write_json_report(
         raise ReportIOError(str(exc)) from exc
 
     return str(out)
+

@@ -1,6 +1,5 @@
 from typing import List, Dict, Set
 from uuid import uuid4
-
 from engine.scheduler.dag import TaskDescriptor
 from engine.planner.cost_model import get_cost_tier, get_cost_units
 from engine.planner.exceptions import (
@@ -8,20 +7,19 @@ from engine.planner.exceptions import (
     UnsupportedProfile,
     ToolResolutionError,
 )
+from engine.scheduler.types import TaskDescriptor
+
 
 # -------------------------
 # PUBLIC ENTRYPOINT
 # -------------------------
 
-def build_scan_dag(scan_request: dict) -> List[TaskDescriptor]:
-    """
-    Build execution DAG from scan request.
+def build_scan_dag(scan_request: dict) -> list[TaskDescriptor]:
+    
+    tasks: list[TaskDescriptor] = []
 
-    Raises:
-        InvalidScanRequest
-        UnsupportedProfile
-        ToolResolutionError
-    """
+    tool_tasks = _build_tool_tasks(scan_request)
+    tasks.extend(tool_tasks)
 
     _validate_scan_request(scan_request)
 
@@ -32,9 +30,20 @@ def build_scan_dag(scan_request: dict) -> List[TaskDescriptor]:
 
     scan_tasks = create_scan_tasks(scan_id, tools)
 
-    correlation_task = create_correlation_task(scan_id, scan_tasks)
-
-    final_dependency = correlation_task.task_id
+    correlation_task = TaskDescriptor(
+        task_id="correlate-findings",
+        scan_id=scan_request["scan_id"],
+        task_type="CORRELATION",
+        cost_tier="POST_PROCESS",
+        depends_on=[t.task_id for t in tool_tasks],
+        payload={
+            "input_paths": [
+                f"/data/scans/{scan_request['scan_id']}/{t.task_id}.jsonl"
+                for t in tool_tasks
+            ],
+            "output_path": f"/data/scans/{scan_request['scan_id']}/correlated.jsonl",
+        },
+    )
 
     if scan_request.get("enable_ai", False):
         ai_task = create_ai_task(scan_id, correlation_task.task_id)
