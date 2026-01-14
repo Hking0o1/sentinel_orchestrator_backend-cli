@@ -5,6 +5,7 @@ from .utils import (
     run_subprocess, is_tool_installed, normalize_severity, 
     ensure_dir, get_logger, DEFAULT_CMD_TIMEOUT
 )
+from scanner.tools.registry import register_tool
 
 log = get_logger("scanner.dast.zap")
 
@@ -65,3 +66,5 @@ def run_zap_scan(target_url: Optional[str], output_dir: str, auth_cookie: Option
             log.error(f"Failed to parse report: {e}")
 
     return {"findings": findings, "raw_report": ("DAST_ZAP", output)}
+
+register_tool("DAST_ZAP", run_zap_scan)

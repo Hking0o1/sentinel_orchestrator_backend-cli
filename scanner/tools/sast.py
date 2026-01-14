@@ -10,7 +10,9 @@ from .utils import (
     SCAN_EXCLUDE_DIRS,
     DEFAULT_CMD_TIMEOUT  
 )
+
 from scanner.tools.registry import register_tool
+REQUIRES_EXTERNAL_DEPENDENCIES = True
 
 COST_METADATA = {
     "tier": "MEDIUM",
@@ -117,4 +119,4 @@ def run_sast_scan(src_path: str, output_dir: str) -> Dict[str, Any]:
     return {"findings": findings, "raw_report": ("SAST_Semgrep", output)}
 
 
-register_tool("SAST", run)
+register_tool("SAST", run_sast_scan)

@@ -8,6 +8,7 @@ from .utils import (
     get_logger,
     SHORT_CMD_TIMEOUT
 )
+from scanner.tools.registry import register_tool
 
 log = get_logger("scanner.dast.sqlmap")
 
@@ -81,3 +82,5 @@ def run_sqlmap_scan(target_url: Optional[str], output_dir: str, timeout: int = S
         "findings": findings,
         "raw_report": ("DAST_SQLMap", output)
     }
+    
+register_tool("DAST_SQLMAP", run_sqlmap_scan)

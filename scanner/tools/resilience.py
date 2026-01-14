@@ -2,6 +2,8 @@ import requests
 import urllib3
 from typing import Dict, Any, Optional
 from .utils import normalize_severity, get_logger
+from scanner.tools.registry import register_tool
+
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 log = get_logger("scanner.resilience")
@@ -60,3 +62,5 @@ def run_resilience_check(target_url: Optional[str]) -> Dict[str, Any]:
         pass
 
     return {"findings": findings, "raw_report": ("Resilience_Check", "Complete")}
+
+register_tool("RESILIENCE", run_resilience_check)

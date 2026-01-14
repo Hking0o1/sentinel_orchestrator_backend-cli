@@ -9,6 +9,8 @@ from .utils import (
     SCAN_EXCLUDE_DIRS,
     SHORT_CMD_TIMEOUT
 )
+from scanner.tools.registry import register_tool
+
 
 log = get_logger("scanner.tools.iac")
 
@@ -112,3 +114,5 @@ def run_iac_scan(src_path: str, output_dir: str) -> Dict[str, Any]:
         "findings": findings,
         "raw_report": ("IAC_Checkov", output)
     }
+    
+register_tool("IAC", run_iac_scan)

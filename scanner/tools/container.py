@@ -10,6 +10,7 @@ from .utils import (
     SCAN_EXCLUDE_DIRS,
     SHORT_CMD_TIMEOUT
 )
+from scanner.tools.registry import register_tool
 
 # --- Setup Logger ---
 log = get_logger("scanner.tools.container")
@@ -107,3 +108,5 @@ def run_container_scan(src_path: str, output_dir: str) -> Dict[str, Any]:
         "findings": findings,
         "raw_report": ("CONTAINER_Trivy", output)
     }
+
+register_tool("CONTAINER", run_container_scan)

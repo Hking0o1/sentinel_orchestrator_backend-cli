@@ -19,7 +19,7 @@ class Normalizer:
     """
 
     @staticmethod
-    def from_standard_finding(finding_dict: Dict[str, Any]) -> UnifiedFinding:
+    def normalize_finding(finding_dict: Dict[str, Any]) -> UnifiedFinding:
         """
         Converts a standard dictionary finding from our orchestrator into a UnifiedFinding object.
         """

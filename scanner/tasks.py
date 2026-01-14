@@ -64,9 +64,9 @@ def run_tool_task(
         )
 
 
-@shared_task(bind=True, autoretry_for=())
+@shared_task(autoretry_for=())
 def run_correlation_task(
-    self,
+    *,
     task_id: str,
     scan_id: str,
     input_paths: list[str],

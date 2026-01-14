@@ -2,6 +2,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from functools import lru_cache
 import pydantic
 from urllib.parse import quote_plus # <-- NEW IMPORT
+import os
 
 class Settings(BaseSettings):
     """
@@ -80,12 +81,38 @@ class Settings(BaseSettings):
     )
 
 
+# -------------------------------
+# TEST SETTINGS (NEW)
+# -------------------------------
+
+class TestSettings(Settings):
+    """
+    Test-only settings with safe defaults.
+    NEVER used in production.
+    """
+
+    SECRET_KEY: str = "test-secret"
+    FIRST_ADMIN_EMAIL: str = "test@example.com"
+    FIRST_ADMIN_PASSWORD: str = "test-password"
+
+    POSTGRES_USER: str = "test"
+    POSTGRES_PASSWORD: str = "test"
+    POSTGRES_DB: str = "test"
+    
+    model_config = SettingsConfigDict(
+        extra="ignore"  
+    )
+
+
 @lru_cache()
 def get_settings() -> Settings:
     """
     Returns a cached instance of the Settings object.
     Using @lru_cache ensures the .env file is read only once.
     """
+    if os.getenv("SENTINEL_TEST_MODE") == "1":
+        return TestSettings()
+    
     return Settings()
 
 # Create a single, globally accessible settings instance

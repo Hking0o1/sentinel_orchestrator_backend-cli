@@ -26,7 +26,7 @@ Ignore Python cache
 pycache/
 *.py[cod]
 *$py.class
-
+__pycache__
 --- Node.js / Frontend ---
 
 Ignore dependencies

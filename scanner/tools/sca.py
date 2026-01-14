@@ -6,8 +6,10 @@ from .utils import (
     ensure_dir, get_logger, SCAN_EXCLUDE_DIRS
 )
 from config.settings import settings # Import settings to get API Key
+from scanner.tools.registry import register_tool
 
 log = get_logger("scanner.tools.sca")
+REQUIRES_EXTERNAL_DEPENDENCIES = True
 
 def run_sca_scan(src_path: str, output_dir: str) -> Dict[str, Any]:
     """
@@ -82,3 +84,5 @@ def run_sca_scan(src_path: str, output_dir: str) -> Dict[str, Any]:
             log.error(f"Failed to parse report: {e}")
 
     return {"findings": findings, "raw_report": ("SCA_DependencyCheck", output)}
+
+register_tool("SCA", run_sca_scan)

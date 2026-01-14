@@ -4,6 +4,7 @@ from .utils import (
     run_subprocess, is_tool_installed, normalize_severity, 
     ensure_dir, get_logger, SHORT_CMD_TIMEOUT
 )
+from scanner.tools.registry import register_tool
 
 log = get_logger("scanner.dast.nikto")
 
@@ -54,3 +55,5 @@ def run_nikto_scan(target_url: Optional[str], output_dir: str) -> Dict[str, Any]
     
     log.info(f"Analysis complete. Found {len(findings)} items.")
     return {"findings": findings, "raw_report": ("DAST_Nikto", output)}
+
+register_tool("DAST_NIKTO", run_nikto_scan)

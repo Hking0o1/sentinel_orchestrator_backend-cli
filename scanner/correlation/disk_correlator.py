@@ -1,10 +1,8 @@
-# scanner/correlation/disk_correlator.py
-
 import json
 from pathlib import Path
 from typing import Dict, Iterable
 
-from scanner.correlation.normalizers import normalize_finding
+from scanner.correlation.normalizers import Normalizer
 from scanner.correlation.mapper import SourceMapper
 from scanner.correlation.models import UnifiedFinding
 
@@ -68,7 +66,7 @@ def _consume_findings_file(
         for line in f:
             raw = json.loads(line)
 
-            normalized = normalize_finding(raw)
+            normalized = Normalizer.normalizer_finding(raw)
             unified = UnifiedFinding.from_normalized(normalized)
 
             mapper.map_source(unified)
