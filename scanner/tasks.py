@@ -1,3 +1,5 @@
+import os
+import logging
 from celery import shared_task
 from typing import Dict, Any
 from scanner.ai.chunker import chunk_findings_jsonl
@@ -9,13 +11,10 @@ from engine.dispatch.callbacks import notify_task_success, notify_task_failure
 from scanner.tools.registry import get_tool
 from scanner.result_adapter import adapt_tool_result
 from scanner.correlation.disk_correlator import correlate_from_disk
-from engine.dispatch.callbacks import (
-    notify_task_success,
-    notify_task_failure,
-)
 from scanner.reporting.json_writer import write_json_report
 from scanner.reporting.pdf_writer import write_pdf_report
-from engine.dispatch.callbacks import notify_task_success, notify_task_failure
+
+logger = logging.getLogger(__name__)
 
 
 @shared_task(bind=True, autoretry_for=())
@@ -170,6 +169,7 @@ def run_ai_summary_task(
     except Exception as exc:
         notify_task_failure(task_id=task_id, error=str(exc))
 
+
 @shared_task(bind=True, autoretry_for=())
 def run_report_task(
     self,
@@ -182,32 +182,63 @@ def run_report_task(
 ):
     """
     POST_PROCESS DAG task: Report generation.
+    Disk-first, retry-safe, AI-isolated.
     """
-
     try:
+        # 1️⃣ Validate findings input
+        if not os.path.exists(findings_path):
+            raise FileNotFoundError(f"Findings file not found: {findings_path}")
+
+        # 2️⃣ Optional AI summary (NON-FATAL)
+        effective_ai_summary_path = None
+        if ai_summary_path:
+            try:
+                write_json_report(
+                    scan_id=scan_id,
+                    findings_path=findings_path,
+                    ai_summary_path=ai_summary_path,
+                    output_path=ai_summary_path,
+                )
+                effective_ai_summary_path = ai_summary_path
+            except Exception as ai_exc:
+                logger.warning(
+                    "AI summary generation failed (ignored): %s", ai_exc
+                )
+
+        # 3️⃣ Core reports (MUST succeed)
         json_path = write_json_report(
             scan_id=scan_id,
             findings_path=findings_path,
-            ai_summary_path=ai_summary_path,
+            ai_summary_path=effective_ai_summary_path,
             output_path=json_output_path,
         )
 
         pdf_path = write_pdf_report(
             scan_id=scan_id,
             findings_path=findings_path,
-            ai_summary_path=ai_summary_path,
+            ai_summary_path=effective_ai_summary_path,
             output_path=pdf_output_path,
         )
 
+        # 4️⃣ Verify artifacts exist
+        if not os.path.exists(json_path):
+            raise RuntimeError("JSON report was not created")
+
+        if not os.path.exists(pdf_path):
+            raise RuntimeError("PDF report was not created")
+
+        # 5️⃣ Success notification
         notify_task_success(
             task_id=task_id,
             output_summary={
                 "task_type": "REPORT",
-                "finding_count": 0,
                 "artifact_count": 2,
             },
             artifacts=[json_path, pdf_path],
         )
 
     except Exception as exc:
-        notify_task_failure(task_id=task_id, error=str(exc))
+        notify_task_failure(
+            task_id=task_id,
+            error=str(exc),
+        )

@@ -49,6 +49,8 @@ COPY ./app /app/app
 # 3. Copy the 'scanner' module (for tasks and models)
 COPY ./scanner /app/scanner
 
+COPY ./engine /app/engine
+
 # -----------------------------------------------
 
 # Expose the port the app runs on

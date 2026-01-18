@@ -174,144 +174,102 @@
     
 #     return all_findings[:limit]
 
-
-
-# app/api/v1/endpoints/scans.py
+from uuid import uuid4
+from typing import Dict
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session
-from typing import List
-from uuid import uuid4
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.session import get_db
-from app.models.scan import Scan
-from app.models.scan import (
-    ScanCreate,
-    ScanResponse,
-    ScanListResponse,
-)
+from app.db.session import get_db_session
+from app.models.scan import Scan, ScanCreate
 from app.core.security import get_current_user
-from app.models.user import User
 
 from engine.services.scan_submitter import ScanSubmitter, ScanSubmissionError
-from engine.scheduler.runtime import get_scheduler  # assumed factory
+from engine.scheduler.runtime import get_scheduler
 
 router = APIRouter()
 
-@router.post(
-    "/start",
-    response_model=ScanResponse,
-    status_code=status.HTTP_202_ACCEPTED,
-)
-def start_scan(
+
+@router.post("/start", status_code=status.HTTP_202_ACCEPTED)
+async def start_scan(
     scan_in: ScanCreate,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
+    current_user=Depends(get_current_user),
 ):
     """
-    Submit a new scan.
-
-    This endpoint:
-    - creates DB record
-    - submits scan to scheduler via ScanSubmitter
-    - returns scan_id immediately
+    Start a new Sentinel scan (Phase 1.5).
     """
 
-    # -------------------------
-    # 1. Create stable scan_id
-    # -------------------------
-    scan_id = f"scan-{uuid4().hex}"
+    # --------------------------------------------------
+    # 1️⃣ Resolve execution targets
+    # --------------------------------------------------
+    targets: Dict[str, str] = {}
+
+    if scan_in.target_url:
+        targets["target_url"] = str(scan_in.target_url)
+
+    if scan_in.source_code_path:
+        targets["source_code_path"] = scan_in.source_code_path
+
+    if not targets:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No valid scan target provided",
+        )
+
+    # --------------------------------------------------
+    # 2️⃣ Persist scan metadata
+    # --------------------------------------------------
+    scan_id = uuid4()
+
+    display_target = (
+        targets.get("target_url")
+        or targets.get("source_code_path")
+    )
 
     scan = Scan(
         id=scan_id,
-        target=scan_in.target,
+        target=display_target,
         profile=scan_in.profile,
-        enable_ai=scan_in.enable_ai,
-        status="SUBMITTED",
+        status="PENDING",
         user_id=current_user.id,
     )
 
     db.add(scan)
-    db.commit()
-    db.refresh(scan)
+    await db.commit()
+    await db.refresh(scan)
 
-    # -------------------------
-    # 2. Submit to engine
-    # -------------------------
+    # --------------------------------------------------
+    # 3️⃣ Submit scan to scheduler
+    # --------------------------------------------------
+    scheduler = get_scheduler()
+    submitter = ScanSubmitter(scheduler)
+
     try:
-        scheduler = get_scheduler()
-        submitter = ScanSubmitter(scheduler)
-
         submitter.submit_scan(
             {
-                "scan_id": scan_id,
-                "target": scan_in.target,
+                "scan_id": str(scan_id),
                 "profile": scan_in.profile,
-                "enable_ai": scan_in.enable_ai,
+                "targets": targets,
+                "auth_cookie": scan_in.auth_cookie,
             }
         )
-
     except ScanSubmissionError as exc:
-        # Mark scan as failed at submission stage
         scan.status = "FAILED"
-        db.commit()
+        await db.commit()
 
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Scan submission failed: {exc}",
+            detail=str(exc),
         )
 
-    # -------------------------
-    # 3. Return immediately
-    # -------------------------
-    return ScanResponse(
-        scan_id=scan_id,
-        status="SUBMITTED",
-        target=scan.target,
-        profile=scan.profile,
-    )
-
-@router.get(
-    "/",
-    response_model=List[ScanListResponse],
-)
-def list_scans(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    scans = (
-        db.query(Scan)
-        .filter(Scan.user_id == current_user.id)
-        .order_by(Scan.created_at.desc())
-        .all()
-    )
-
-    return scans
-
-@router.get(
-    "/{scan_id}",
-    response_model=ScanResponse,
-)
-def get_scan(
-    scan_id: str,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    scan = (
-        db.query(Scan)
-        .filter(
-            Scan.id == scan_id,
-            Scan.user_id == current_user.id,
-        )
-        .first()
-    )
-
-    if not scan:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Scan not found",
-        )
-
-    return scan
-
+    # --------------------------------------------------
+    # 4️⃣ Response
+    # --------------------------------------------------
+    return {
+        "scan_id": str(scan.id),
+        "target": scan.target,
+        "profile": scan.profile,
+        "status": scan.status,
+    }
 

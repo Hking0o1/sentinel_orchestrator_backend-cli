@@ -2,6 +2,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from functools import lru_cache
 import pydantic
 from urllib.parse import quote_plus # <-- NEW IMPORT
+from typing import Optional
 import os
 
 class Settings(BaseSettings):
@@ -44,12 +45,17 @@ class Settings(BaseSettings):
     JIRA_USERNAME: str | None = None
     JIRA_API_TOKEN: str | None = None
 
+    NOTIFICATION_WEBHOOK_URL: Optional[str] = None
+    
     # --- NEW: PostgreSQL Database Configuration ---
     POSTGRES_SERVER: str = "db"
     POSTGRES_USER: str
     POSTGRES_PASSWORD: str
     POSTGRES_DB: str
     
+    SCHEDULER_MAX_TOKENS: int = 6
+    SCHEDULER_MAX_CONCURRENT_TASKS: int = 4
+    SCHEDULER_MAX_HEAVY_TASKS: int = 1
 
     # --- MinIO ---
     MINIO_ROOT_USER: str = "minioadmin"

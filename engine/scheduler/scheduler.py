@@ -1,13 +1,13 @@
+from __future__ import annotations
 from typing import Dict, Iterable, Callable, Optional
-
+from .policies import DefaultSchedulingPolicy
 from .dag import TaskDescriptor
 from .state import TaskRuntimeState
 from .types import TaskState
 from .queue import SchedulerQueue
 from .resources import ResourceBudget
 from .registry import InFlightRegistry
-from .metrics import SchedulerMetrics
-
+from config.settings import settings
 
 
 BASE_COST = {
@@ -37,12 +37,19 @@ class ScanScheduler:
     - generate reports
     """
 
-    def __init__(self, total_resource_units: int):
+    def __init__(self, 
+        *,
+        resource_budget: ResourceBudget,
+        policy: DefaultSchedulingPolicy,
+        max_concurrent_tasks: int,
+        max_heavy_tasks: int,
+        metrics: Optional[object])-> None:
+        
         # core primitives
         self.queue = SchedulerQueue()
-        self.resources = ResourceBudget(total_resource_units)
+        self.resources = ResourceBudget(settings.SCHEDULER_MAX_TOKENS)
         self.in_flight = InFlightRegistry()
-        self.metrics = SchedulerMetrics()
+        self.metrics = metrics
 
         # execution graph
         self.tasks: Dict[str, TaskDescriptor] = {}
@@ -52,6 +59,19 @@ class ScanScheduler:
         self.parents: Dict[str, set[str]] = {}
         self.children: Dict[str, set[str]] = {}
         
+        self._resource_budget = resource_budget
+        self._policy = policy
+
+        # ---- Concurrency limits ----
+        self._max_concurrent_tasks = max_concurrent_tasks
+        self._max_heavy_tasks = max_heavy_tasks
+
+        # ---- Internal scheduler state ----
+        self._in_flight = InFlightRegistry()
+
+        # task_id -> runtime state (scheduler-owned)
+        self._task_state: Dict[str, TaskRuntimeState] = {}
+
     def submit_tasks(self, descriptors: Iterable[TaskDescriptor]) -> None:
         """
         Admit a new scan's tasks into the scheduler.

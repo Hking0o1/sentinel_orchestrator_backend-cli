@@ -2,9 +2,12 @@ import pydantic
 from enum import Enum
 from datetime import datetime
 from typing import Optional, List
-from pydantic import ConfigDict, AnyUrl
+from pydantic import ConfigDict, AnyUrl, Field
 from pydantic.alias_generators import to_camel
-
+from sqlalchemy import Column, String, DateTime, Integer, ForeignKey, Enum as SQLEnum
+from app.db.base import Base
+from sqlalchemy.dialects.postgresql import UUID
+import uuid
 # --- Enums (No changes) ---
 class ScanProfile(str, Enum):
     DEVELOPER = "developer"
@@ -59,7 +62,7 @@ class ScanJob(pydantic.BaseModel):
     target_url: Optional[AnyUrl] = None
     source_code_path: Optional[str] = None
     auth_cookie: Optional[str] = None
-    created_at: datetime
+    created_at: datetime = Field(default_factory=datetime.utcnow)
     completed_at: Optional[datetime] = None
     highest_severity: ScanSeverity = ScanSeverity.INFO
     findings: List[ScanFinding] = []
@@ -88,3 +91,14 @@ class ScanJobUpdate(pydantic.BaseModel):
     
     # --- NEW: Update with AI text ---
     ai_report_text: Optional[str] = None
+    
+    
+class Scan(Base):
+    __tablename__ = "scans"
+
+    id = Column(String, primary_key=True)
+    target = Column(String, nullable=False)
+    profile = Column(SQLEnum(ScanProfile), nullable=False)
+    status = Column(SQLEnum(ScanStatus), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)

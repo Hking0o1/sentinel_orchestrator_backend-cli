@@ -7,7 +7,6 @@ from engine.planner.exceptions import (
     UnsupportedProfile,
     ToolResolutionError,
 )
-from engine.scheduler.types import TaskDescriptor
 
 
 # -------------------------

@@ -85,7 +85,7 @@ RUN dependency-check --updateonly --nvdApiKey $NVD_API_KEY
 COPY ./config /app/config
 COPY ./app /app/app
 COPY ./scanner /app/scanner
-
+COPY ./engine /app/engine
 # --- Entrypoint ---
 # The command to run the Celery worker.
-CMD ["celery", "-A", "scanner.tasks.celery_app", "worker", "--loglevel=info", "-P", "solo"]
+CMD ["celery", "-A", "scanner.celery_app.celery_app", "worker", "--loglevel=info", "-P", "solo"]

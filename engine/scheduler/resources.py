@@ -1,39 +1,66 @@
+# engine/scheduler/resources.py
+
+from __future__ import annotations
+from threading import Lock
+
+
 class ResourceBudget:
     """
-    Bounded execution resource controller.
+    Deterministic resource budget based on abstract tokens.
 
-    Represents abstract execution pressure
-    (CPU, memory, IO combined).
+    Scheduler-owned.
+    Thread-safe.
     """
 
-    __slots__ = ("_total", "_available")
+    def __init__(self, max_tokens: int):
+        if max_tokens <= 0:
+            raise ValueError("max_tokens must be > 0")
 
-    def __init__(self, total_units: int):
-        assert total_units > 0
-        self._total: int = total_units
-        self._available: int = total_units
-
-    @property
-    def total(self) -> int:
-        return self._total
+        self._max_tokens = max_tokens
+        self._used_tokens = 0
+        self._lock = Lock()
 
     @property
-    def available(self) -> int:
-        return self._available
+    def max_tokens(self) -> int:
+        return self._max_tokens
 
-    def can_allocate(self, units: int) -> bool:
-        return units <= self._available
+    @property
+    def used_tokens(self) -> int:
+        return self._used_tokens
 
-    def allocate(self, units: int) -> None:
-        if units > self._available:
-            raise RuntimeError("Resource budget exceeded")
-        self._available -= units
+    @property
+    def available_tokens(self) -> int:
+        return self._max_tokens - self._used_tokens
 
-    def release(self, units: int) -> None:
-        self._available += units
-        if self._available > self._total:
-            raise RuntimeError("Resource budget over-release")
-        
+    def can_acquire(self, tokens: int) -> bool:
+        if tokens <= 0:
+            return False
+        return self.available_tokens >= tokens
+
+    def acquire(self, tokens: int) -> bool:
+        """
+        Attempt to acquire tokens.
+        Returns True if successful.
+        """
+        if tokens <= 0:
+            return False
+
+        with self._lock:
+            if self._used_tokens + tokens > self._max_tokens:
+                return False
+            self._used_tokens += tokens
+            return True
+
+    def release(self, tokens: int) -> None:
+        """
+        Release previously acquired tokens.
+        """
+        if tokens <= 0:
+            return
+
+        with self._lock:
+            self._used_tokens = max(0, self._used_tokens - tokens)
+ 
     #test
     def test_resource_budget():
         rb = ResourceBudget(4)

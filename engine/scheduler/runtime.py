@@ -1,5 +1,3 @@
-# engine/scheduler/runtime.py
-
 """
 Scheduler runtime lifecycle management.
 
@@ -8,12 +6,11 @@ This module owns the singleton ScanScheduler instance.
 
 from typing import Optional
 
-from engine.scheduler.scheduler import ScanScheduler
-from engine.scheduler.resources import ResourceBudget
-from engine.scheduler.metrics import SchedulerMetrics
-from engine.scheduler.policies import DefaultSchedulingPolicy
-
-
+from .scheduler import ScanScheduler
+from .resources import ResourceBudget
+from .metrics import SchedulerMetrics
+from .policies import DefaultSchedulingPolicy
+from config.settings import settings
 # Internal singleton
 _SCHEDULER: Optional[ScanScheduler] = None
 
@@ -37,13 +34,15 @@ def init_scheduler(
     budget = ResourceBudget(max_tokens=max_tokens)
     metrics = SchedulerMetrics()
     policy = DefaultSchedulingPolicy()
-
+    max_heavy_tasks = settings.SCHEDULER_MAX_HEAVY_TASKS
     _SCHEDULER = ScanScheduler(
         resource_budget=budget,
-        scheduling_policy=policy,
+        policy=policy,
         metrics=metrics,
         max_concurrent_tasks=max_concurrent_tasks,
-    )
+        max_heavy_tasks= max_heavy_tasks,
+)
+    
 
     return _SCHEDULER
 

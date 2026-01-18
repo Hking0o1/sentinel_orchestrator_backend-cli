@@ -74,7 +74,7 @@ services:
     networks:
       - sentinel_net
     command: >
-      sh -c "celery -A scanner.tasks.celery_app beat 
+      sh -c "celery -A scanner.celery_app.celery_app beat 
              --loglevel=info 
              --schedule=/app/scan_results/celerybeat-schedule"
     
