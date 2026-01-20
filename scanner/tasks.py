@@ -13,6 +13,8 @@ from scanner.result_adapter import adapt_tool_result
 from scanner.correlation.disk_correlator import correlate_from_disk
 from scanner.reporting.json_writer import write_json_report
 from scanner.reporting.pdf_writer import write_pdf_report
+from app.db.session import get_db_session
+from app.models.scan import ScanJob
 
 logger = logging.getLogger(__name__)
 
@@ -23,45 +25,56 @@ def run_tool_task(
     task_id: str,
     scan_id: str,
     task_type: str,
-    target: str,
-    payload: Dict[str, Any] | None = None,
 ):
     """
-    Commit 5: SINGLE UNIT OF EXECUTION
+    Execute a single tool task.
 
-    - Executes exactly one tool
-    - No orchestration
-    - No DB
-    - No retries
-    - No AI
-    - No reports
+    Phase 1.5:
+    - Scheduler passes identity only
+    - Worker resolves execution data from DB
     """
 
+    db = None
     try:
-        runner = get_tool(task_type)
-
-        raw_result = runner(
-            task_id=task_id,
-            scan_id=scan_id,
-            target=target,
-            **(payload or {}),
+        # 1️⃣ Load scan + target from DB
+        db = get_db_session()
+        scan: ScanJob | None = (
+            db.query(ScanJob)
+            .filter(ScanJob.id == scan_id)
+            .one_or_none()
         )
 
-        # Normalize tool output
-        tool_result = adapt_tool_result(raw_result)
+        if scan is None:
+            raise RuntimeError(f"Scan not found: {scan_id}")
 
-        # Notify scheduler (authoritative)
+        target = scan.target
+        if not target:
+            raise RuntimeError("Scan target is empty")
+
+        # 2️⃣ Resolve tool runner
+        runner = get_tool(task_type)
+
+        # 3️⃣ Execute tool
+        result = runner(target=target)
+
+        # 4️⃣ Notify scheduler
         notify_task_success(
             task_id=task_id,
-            output=tool_result,
+            output_summary={
+                "task_type": task_type,
+                "artifact_count": 1,
+            },
+            artifacts=[result.get("raw_report")],
         )
 
     except Exception as exc:
-        notify_task_failure(
-            task_id=task_id,
-            error=str(exc),
-        )
+        logger.exception("Tool execution failed")
+        notify_task_failure(task_id=task_id, error=str(exc))
+        raise
 
+    finally:
+        if db is not None:
+            db.close()
 
 @shared_task(autoretry_for=())
 def run_correlation_task(

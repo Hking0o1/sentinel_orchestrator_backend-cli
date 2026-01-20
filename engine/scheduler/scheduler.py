@@ -58,8 +58,6 @@ class ScanScheduler:
         # DAG edges
         self.parents: Dict[str, set[str]] = {}
         self.children: Dict[str, set[str]] = {}
-        
-        self._resource_budget = resource_budget
         self._policy = policy
 
         # ---- Concurrency limits ----
@@ -102,7 +100,7 @@ class ScanScheduler:
         td = self.tasks[task_id]
         rt = self.runtime[task_id]
 
-        base = BASE_COST.get(td.cost_tier, 50)
+        base = td.cost_units
         memory_penalty = td.cost_units * MEMORY_WEIGHT
         retry_penalty = rt.retry_count * RETRY_WEIGHT
 
@@ -157,12 +155,12 @@ class ScanScheduler:
             if rt.state != TaskState.READY:
                 continue
 
-            if not self.resources.can_allocate(td.cost_units):
+            if not self.resources.can_acquire(td.cost_units):
                 break  # backpressure
 
             # FSM transition
             rt.state = TaskState.RUNNING
-            self.resources.allocate(td.cost_units)
+            self.resources.acquire(td.cost_units)
             self.in_flight.add(task_id, td.cost_units)
 
             self.metrics.inc("tasks_scheduled_total")

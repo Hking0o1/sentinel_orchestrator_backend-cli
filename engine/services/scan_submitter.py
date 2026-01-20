@@ -45,18 +45,15 @@ class ScanSubmitter:
             normalized_request = self._normalize_request(scan_request)
 
             # 🔑 DAG builder is the ONLY place where tasks are constructed
-            dag = build_scan_dag(normalized_request)
+            dag = build_scan_dag(scan_request)
 
             scan_id = normalized_request["scan_id"]
 
             # Register DAG with scheduler
-            self._scheduler.register_dag(
-                scan_id=scan_id,
-                tasks=dag,
-            )
+            self._scheduler.submit_tasks(dag)
 
             # Initialize READY tasks
-            self._scheduler.initialize_ready_tasks(scan_id=scan_id)
+            self._scheduler.initialize_ready_tasks()
 
             # Trigger a single dispatch cycle
             self._dispatcher.run_once()

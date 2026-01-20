@@ -1,7 +1,0 @@
-{
-  "scan_id": "scan-2",
-  "findings": [
-    {"id": 1}
-  ],
-  "ai_summary": ""
-}

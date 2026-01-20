@@ -11,6 +11,7 @@ from .resources import ResourceBudget
 from .metrics import SchedulerMetrics
 from .policies import DefaultSchedulingPolicy
 from config.settings import settings
+
 # Internal singleton
 _SCHEDULER: Optional[ScanScheduler] = None
 
