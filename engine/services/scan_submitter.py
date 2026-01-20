@@ -1,18 +1,3 @@
-# engine/services/scan_submitter.py
-
-"""
-Scan submission service.
-
-This module is the ONLY entry point for submitting scans
-from API or CLI into the Sentinel execution engine.
-
-Responsibilities:
-- Validate scan request (lightweight)
-- Build execution DAG
-- Register DAG with scheduler
-- Trigger dispatch loop
-"""
-
 from typing import Dict, Any
 from uuid import uuid4
 
@@ -51,35 +36,36 @@ class ScanSubmitter:
             scan_request: user-provided scan configuration
 
         Returns:
-            scan_id (str): stable identifier for the scan
+            scan_id (str)
 
         Raises:
             ScanSubmissionError
         """
-
         try:
             normalized_request = self._normalize_request(scan_request)
 
+            # 🔑 DAG builder is the ONLY place where tasks are constructed
             dag = build_scan_dag(normalized_request)
+
+            scan_id = normalized_request["scan_id"]
 
             # Register DAG with scheduler
             self._scheduler.register_dag(
-                scan_id=normalized_request["scan_id"],
+                scan_id=scan_id,
                 tasks=dag,
             )
 
-            # Prime scheduler (mark READY tasks)
-            self._scheduler.initialize_ready_tasks(
-                scan_id=normalized_request["scan_id"]
-            )
+            # Initialize READY tasks
+            self._scheduler.initialize_ready_tasks(scan_id=scan_id)
 
-            # Trigger one dispatch cycle (non-blocking)
+            # Trigger a single dispatch cycle
             self._dispatcher.run_once()
 
-            return normalized_request["scan_id"]
+            return scan_id
 
         except Exception as exc:
             raise ScanSubmissionError(str(exc)) from exc
+
 
     # ------------------------------------------------------------------
     # INTERNAL HELPERS
@@ -101,13 +87,15 @@ class ScanSubmitter:
         if "scan_id" not in normalized or not normalized["scan_id"]:
             normalized["scan_id"] = self._generate_scan_id()
 
-        # Required fields (planner will validate deeper)
-        if "target" not in normalized:
-            raise ValueError("scan_request missing 'target'")
+        # Phase 1.5 canonical requirement: targets
+        if "targets" not in normalized or not normalized["targets"]:
+            raise ValueError("scan_request missing 'targets'")
+
+        if not isinstance(normalized["targets"], dict):
+            raise ValueError("scan_request.targets must be a dict")
 
         # Optional defaults
         normalized.setdefault("profile", "full")
-        normalized.setdefault("enable_ai", False)
 
         return normalized
 

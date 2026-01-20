@@ -7,8 +7,62 @@ from engine.planner.exceptions import (
     UnsupportedProfile,
     ToolResolutionError,
 )
+from app.models.scan import ScanProfile
+from engine.scheduler.types import TaskCostTier, TaskIdentity
+from scanner.tools.registry import get_tool, has_tool
 
 
+def _build_tool_tasks(scan_request: Dict) -> List[TaskIdentity]:
+    """
+    Build tool execution tasks based on scan profile and targets.
+    """
+
+    scan_id = scan_request["scan_id"]
+    profile = scan_request.get("profile")
+    targets = scan_request["targets"]
+
+    if not isinstance(targets, dict) or not targets:
+        raise ValueError("scan_request.targets must be a non-empty dict")
+
+    # -----------------------------
+    # Profile → tool selection
+    # -----------------------------
+    profile_tool_map = {
+        ScanProfile.WEB: [
+            ("DAST_ZAP", TaskCostTier.HEAVY),
+            ("DAST_NIKTO", TaskCostTier.MEDIUM),
+        ],
+        ScanProfile.DEVELOPER: [
+            ("SAST", TaskCostTier.MEDIUM),
+            ("SCA", TaskCostTier.LIGHT),
+        ],
+        ScanProfile.FULL: [
+            ("SAST", TaskCostTier.MEDIUM),
+            ("SCA", TaskCostTier.LIGHT),
+            ("DAST_ZAP", TaskCostTier.HEAVY),
+            ("DAST_NIKTO", TaskCostTier.MEDIUM),
+        ],
+    }
+
+    if profile not in profile_tool_map:
+        raise ValueError(f"Unsupported scan profile: {profile}")
+
+    tasks: List[TaskIdentity] = []
+
+    for tool_type, cost_tier in profile_tool_map[profile]:
+        task_id = f"{scan_id}:{tool_type}"
+
+        tasks.append(
+            TaskIdentity(
+                task_id=task_id,
+                scan_id=scan_id,
+                task_type=tool_type,     # string is fine here
+                cost_tier=cost_tier,
+                max_retries=2,
+            )
+        )
+
+    return tasks
 # -------------------------
 # PUBLIC ENTRYPOINT
 # -------------------------

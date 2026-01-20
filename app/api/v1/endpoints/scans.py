@@ -186,7 +186,9 @@ from app.core.security import get_current_user
 
 from engine.services.scan_submitter import ScanSubmitter, ScanSubmissionError
 from engine.scheduler.runtime import get_scheduler
+import logging
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
@@ -245,6 +247,7 @@ async def start_scan(
     scheduler = get_scheduler()
     submitter = ScanSubmitter(scheduler)
 
+        
     try:
         submitter.submit_scan(
             {
@@ -254,15 +257,14 @@ async def start_scan(
                 "auth_cookie": scan_in.auth_cookie,
             }
         )
-    except ScanSubmissionError as exc:
+    except Exception as exc:
+        logger.exception("Scan submission failed")
         scan.status = "FAILED"
         await db.commit()
-
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            status_code=500,
             detail=str(exc),
         )
-
     # --------------------------------------------------
     # 4️⃣ Response
     # --------------------------------------------------

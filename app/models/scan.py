@@ -96,7 +96,7 @@ class ScanJobUpdate(pydantic.BaseModel):
 class Scan(Base):
     __tablename__ = "scans"
 
-    id = Column(String, primary_key=True)
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     target = Column(String, nullable=False)
     profile = Column(SQLEnum(ScanProfile), nullable=False)
     status = Column(SQLEnum(ScanStatus), nullable=False)
