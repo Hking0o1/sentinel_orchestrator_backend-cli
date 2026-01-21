@@ -4,38 +4,65 @@ from typing import Dict, Any, Callable
 
 class ToolRunnerAdapter:
     """
-    Adapts heterogeneous tool runner signatures
-    to a uniform execution interface.
+    Normalizes heterogeneous tool runner signatures into a single call contract.
+
+    Supported input parameters (one required):
+    - target_url
+    - target
+    - src_path
+
+    Required:
+    - output_dir
     """
 
     def __init__(self, runner: Callable[..., Dict[str, Any]]):
         self.runner = runner
-        self._params = inspect.signature(runner).parameters
+        self.sig = inspect.signature(runner)
+        self.params = self.sig.parameters
 
-    def run(
+    def __call__(
         self,
         *,
-        target: str | None = None,
+        target_url: str | None = None,
         src_path: str | None = None,
         output_dir: str,
-        **kwargs,
+        **extra,
     ) -> Dict[str, Any]:
-        try:
-            call_kwargs = {"output_dir": output_dir}
 
-            if "src_path" in self._params and src_path is not None:
-                call_kwargs["src_path"] = src_path
-            elif "target" in self._params and target is not None:
-                call_kwargs["target"] = target
-            else:
-                raise ValueError(
-                    f"Tool {self.runner.__name__} does not accept "
-                    f"src_path or target"
+        call_kwargs: Dict[str, Any] = {"output_dir": output_dir}
+
+        # --- URL-based tools ---
+        if "target_url" in self.params:
+            if not target_url:
+                raise RuntimeError(
+                    f"{self.runner.__name__} requires target_url"
                 )
+            call_kwargs["target_url"] = target_url
 
+        elif "target" in self.params:
+            if not target_url:
+                raise RuntimeError(
+                    f"{self.runner.__name__} requires target"
+                )
+            call_kwargs["target"] = target_url
+
+        # --- Source-based tools ---
+        elif "src_path" in self.params:
+            if not src_path:
+                raise RuntimeError(
+                    f"{self.runner.__name__} requires src_path"
+                )
+            call_kwargs["src_path"] = src_path
+
+        else:
+            raise RuntimeError(
+                f"Unsupported tool signature: {self.runner.__name__}{self.sig}"
+            )
+
+        try:
             return self.runner(**call_kwargs)
 
         except TypeError as exc:
             raise RuntimeError(
-                f"Tool runner signature mismatch: {self.runner.__name__}"
+                f"Tool runner invocation failed: {self.runner.__name__}{self.sig}"
             ) from exc

@@ -9,6 +9,8 @@ def init_scheduler(scheduler: ScanScheduler):
 
 
 def notify_task_success(task_id: str, output: dict):
+    if _scheduler is None:
+        return
     assert _scheduler is not None
     _scheduler.on_task_complete(
         task_id=task_id,
@@ -18,6 +20,8 @@ def notify_task_success(task_id: str, output: dict):
 
 
 def notify_task_failure(task_id: str, error: str):
+    if _scheduler is None:
+        return
     assert _scheduler is not None
     _scheduler.on_task_complete(
         task_id=task_id,

@@ -53,8 +53,8 @@ class Settings(BaseSettings):
     POSTGRES_PASSWORD: str
     POSTGRES_DB: str
     
-    SCHEDULER_MAX_TOKENS: int = 6
-    SCHEDULER_MAX_CONCURRENT_TASKS: int = 4
+    SCHEDULER_MAX_TOKENS: int = 12
+    SCHEDULER_MAX_CONCURRENT_TASKS: int = 6
     SCHEDULER_MAX_HEAVY_TASKS: int = 1
 
     # --- MinIO ---

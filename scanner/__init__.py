@@ -1,0 +1,1 @@
+from scanner.celery_app import celery_app

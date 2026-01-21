@@ -1,103 +1,92 @@
+from pathlib import Path
+import json
+import uuid
 from typing import Dict, Any
-from uuid import uuid4
 
 from engine.planner.dag_builder import build_scan_dag
 from engine.scheduler.scheduler import ScanScheduler
-from engine.dispatch.celery_dispatch import CeleryDispatcher
+from config.settings import settings
 
 
 class ScanSubmissionError(Exception):
-    """Raised when scan submission fails."""
+    pass
 
 
 class ScanSubmitter:
     """
-    Stateless service object.
-
-    Safe to reuse across API and CLI.
+    Responsible for:
+    - Normalizing scan requests
+    - Writing immutable scan metadata
+    - Registering DAG with the scheduler
     """
 
     def __init__(self, scheduler: ScanScheduler):
-        if scheduler is None:
-            raise ValueError("scheduler must not be None")
-
         self._scheduler = scheduler
-        self._dispatcher = CeleryDispatcher(scheduler)
 
-    # ------------------------------------------------------------------
-    # PUBLIC API
-    # ------------------------------------------------------------------
+        # 🔑 THIS WAS MISSING
+        self._meta_dir = Path(settings.SCAN_RESULTS_DIR)
+        self._meta_dir.mkdir(parents=True, exist_ok=True)
 
+    # -----------------------------
+    # Public API
+    # -----------------------------
     def submit_scan(self, scan_request: Dict[str, Any]) -> str:
-        """
-        Submit a scan into Sentinel.
-
-        Args:
-            scan_request: user-provided scan configuration
-
-        Returns:
-            scan_id (str)
-
-        Raises:
-            ScanSubmissionError
-        """
         try:
-            normalized_request = self._normalize_request(scan_request)
+            scan_id = str(uuid.uuid4())
 
-            # 🔑 DAG builder is the ONLY place where tasks are constructed
-            dag = build_scan_dag(scan_request)
+            normalized = self._normalize_scan_request(scan_request)
+            dag = build_scan_dag(normalized)
 
-            scan_id = normalized_request["scan_id"]
+            # Persist immutable metadata FIRST
+            self._write_scan_meta(scan_id, normalized)
 
             # Register DAG with scheduler
-            self._scheduler.submit_tasks(dag)
-
-            # Initialize READY tasks
-            self._scheduler.initialize_ready_tasks()
-
-            # Trigger a single dispatch cycle
-            self._dispatcher.run_once()
+            self._scheduler.register_scan_dag(
+                scan_id=scan_id,
+                dag=dag,
+            )
 
             return scan_id
 
         except Exception as exc:
             raise ScanSubmissionError(str(exc)) from exc
 
+    # -----------------------------
+    # Internal helpers
+    # -----------------------------
+    def _normalize_scan_request(self, scan_request: Dict[str, Any]) -> Dict[str, Any]:
+        profile = scan_request.get("profile")
+        if not profile:
+            raise ScanSubmissionError("profile missing")
 
-    # ------------------------------------------------------------------
-    # INTERNAL HELPERS
-    # ------------------------------------------------------------------
+        normalized: Dict[str, Any] = {
+            "profile": profile.lower(),
+            "enable_ai": scan_request.get("enable_ai", False),
+        }
 
-    def _normalize_request(self, scan_request: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Normalize and minimally validate incoming scan request.
+        if profile.lower() == "web":
+            target_url = scan_request.get("target_url")
+            if not target_url:
+                raise ScanSubmissionError("target_url missing for web scan")
 
-        We do NOT do deep validation here — API layer handles that.
-        """
+            # 🔑 Keep BOTH canonical + explicit fields
+            normalized["target"] = target_url
+            normalized["target_url"] = target_url
 
-        if not isinstance(scan_request, dict):
-            raise ValueError("scan_request must be a dictionary")
+        else:
+            src_path = scan_request.get("source_code_path")
+            if not src_path:
+                raise ScanSubmissionError("source_code_path missing")
 
-        normalized = dict(scan_request)
-
-        # Ensure scan_id exists and is stable
-        if "scan_id" not in normalized or not normalized["scan_id"]:
-            normalized["scan_id"] = self._generate_scan_id()
-
-        # Phase 1.5 canonical requirement: targets
-        if "targets" not in normalized or not normalized["targets"]:
-            raise ValueError("scan_request missing 'targets'")
-
-        if not isinstance(normalized["targets"], dict):
-            raise ValueError("scan_request.targets must be a dict")
-
-        # Optional defaults
-        normalized.setdefault("profile", "full")
+            normalized["src_path"] = src_path
 
         return normalized
 
-    def _generate_scan_id(self) -> str:
-        """
-        Generate a stable, user-visible scan ID.
-        """
-        return f"scan-{uuid4().hex}"
+    def _write_scan_meta(self, scan_id: str, normalized_request: Dict[str, Any]) -> None:
+        scan_dir = self._meta_dir / scan_id
+        scan_dir.mkdir(parents=True, exist_ok=True)
+
+        meta_path = scan_dir / "meta.json"
+
+        with meta_path.open("w", encoding="utf-8") as f:
+            json.dump(normalized_request, f, indent=2)

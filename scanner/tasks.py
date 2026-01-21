@@ -1,5 +1,6 @@
 import os
 import logging
+from pathlib import Path
 from celery import shared_task
 from typing import Dict, Any
 from scanner.ai.chunker import chunk_findings_jsonl
@@ -13,10 +14,14 @@ from scanner.result_adapter import adapt_tool_result
 from scanner.correlation.disk_correlator import correlate_from_disk
 from scanner.reporting.json_writer import write_json_report
 from scanner.reporting.pdf_writer import write_pdf_report
+from app.db.sync_session import get_sync_db
 from app.db.session import get_db_session
-from app.models.scan import ScanJob
+from app.models.scan import Scan
+from scanner.tools.adapter import ToolRunnerAdapter
+from engine.runtime.meta_loader import load_execution_context
 
 logger = logging.getLogger(__name__)
+
 
 
 @shared_task(bind=True, autoretry_for=())
@@ -27,37 +32,39 @@ def run_tool_task(
     task_type: str,
 ):
     """
-    Execute a single tool task.
+    Execute a single tool task (Celery worker context).
 
-    Phase 1.5:
-    - Scheduler passes identity only
-    - Worker resolves execution data from DB
+    - DB is used ONLY for validation / status
+    - Execution inputs are loaded from disk (meta.json)
+    - Tool execution is stateless and retry-safe
     """
 
     db = None
     try:
-        # 1️⃣ Load scan + target from DB
-        db = get_db_session()
-        scan: ScanJob | None = (
-            db.query(ScanJob)
-            .filter(ScanJob.id == scan_id)
-            .one_or_none()
-        )
+        # Sync DB session (identity check only)
+        db = next(get_sync_db())
 
+        scan = db.query(Scan).filter(Scan.id == scan_id).one_or_none()
         if scan is None:
             raise RuntimeError(f"Scan not found: {scan_id}")
 
-        target = scan.target
-        if not target:
-            raise RuntimeError("Scan target is empty")
+        # Load execution context from disk
+        ctx = load_execution_context(scan_id)
 
-        # 2️⃣ Resolve tool runner
+        #  Resolve tool
         runner = get_tool(task_type)
+        adapter = ToolRunnerAdapter(runner)
 
-        # 3️⃣ Execute tool
-        result = runner(target=target)
+        # Execute tool
+        result = adapter(
+            target_url=ctx.target_url,
+            src_path=ctx.src_path,
+            output_dir=str(
+                Path("/app/scan_results") / scan_id / "artifacts" / task_type
+            ),
+        )
 
-        # 4️⃣ Notify scheduler
+        # Notify scheduler
         notify_task_success(
             task_id=task_id,
             output_summary={
@@ -73,7 +80,7 @@ def run_tool_task(
         raise
 
     finally:
-        if db is not None:
+        if db:
             db.close()
 
 @shared_task(autoretry_for=())
@@ -198,11 +205,11 @@ def run_report_task(
     Disk-first, retry-safe, AI-isolated.
     """
     try:
-        # 1️⃣ Validate findings input
+        # Validate findings input
         if not os.path.exists(findings_path):
             raise FileNotFoundError(f"Findings file not found: {findings_path}")
 
-        # 2️⃣ Optional AI summary (NON-FATAL)
+        #  Optional AI summary (NON-FATAL)
         effective_ai_summary_path = None
         if ai_summary_path:
             try:
@@ -218,7 +225,7 @@ def run_report_task(
                     "AI summary generation failed (ignored): %s", ai_exc
                 )
 
-        # 3️⃣ Core reports (MUST succeed)
+        # Core reports (MUST succeed)
         json_path = write_json_report(
             scan_id=scan_id,
             findings_path=findings_path,
@@ -233,14 +240,14 @@ def run_report_task(
             output_path=pdf_output_path,
         )
 
-        # 4️⃣ Verify artifacts exist
+        #  Verify artifacts exist
         if not os.path.exists(json_path):
             raise RuntimeError("JSON report was not created")
 
         if not os.path.exists(pdf_path):
             raise RuntimeError("PDF report was not created")
 
-        # 5️⃣ Success notification
+        # Success notification
         notify_task_success(
             task_id=task_id,
             output_summary={
