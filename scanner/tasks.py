@@ -1,3 +1,4 @@
+from scanner.celery_app import celery_app
 import os
 import logging
 from pathlib import Path
@@ -16,12 +17,14 @@ from scanner.reporting.json_writer import write_json_report
 from scanner.reporting.pdf_writer import write_pdf_report
 from app.db.sync_session import get_sync_db
 from app.db.session import get_db_session
-from app.models.scan import Scan
+from app.models.scan import Scan, ScanProfile
+from config.settings import settings
 from scanner.tools.adapter import ToolRunnerAdapter
+from engine.runtime.scan_context import ExecutionScanContext
 from engine.runtime.meta_loader import load_execution_context
 
 logger = logging.getLogger(__name__)
-
+__all__ = ["celery_app"]
 
 
 @shared_task(bind=True, autoretry_for=())
@@ -47,8 +50,16 @@ def run_tool_task(
         scan = db.query(Scan).filter(Scan.id == scan_id).one_or_none()
         if scan is None:
             raise RuntimeError(f"Scan not found: {scan_id}")
+        
+        scan_dir = Path(settings.SCAN_RESULTS_DIR) / scan_id
+        tool_dir = scan_dir / "tools"
+        tool_dir.mkdir(parents=True, exist_ok=True)
 
-        # Load execution context from disk
+        log_file = tool_dir / f"{task_type.lower()}.log"
+
+        logger.info("Starting tool execution",
+                    extra={"scan_id": scan_id, "task": task_type})
+                # Load execution context from disk
         ctx = load_execution_context(scan_id)
 
         #  Resolve tool
@@ -57,13 +68,20 @@ def run_tool_task(
 
         # Execute tool
         result = adapter(
-            target_url=ctx.target_url,
-            src_path=ctx.src_path,
-            output_dir=str(
-                Path("/app/scan_results") / scan_id / "artifacts" / task_type
-            ),
+            context=ExecutionScanContext(
+                scan_id=str(scan.id),
+                profile=scan.profile,
+                target_url=scan.target if scan.profile == ScanProfile.WEB else None,
+                src_path=None,
+                output_dir=str(tool_dir),  
+            )
         )
+        raw_report = result.get("raw_report")
 
+        if raw_report:
+            with open(log_file, "w", encoding="utf-8") as f:
+                f.write(str(raw_report))
+                
         # Notify scheduler
         notify_task_success(
             task_id=task_id,
@@ -73,7 +91,15 @@ def run_tool_task(
             },
             artifacts=[result.get("raw_report")],
         )
-
+        
+        logger.info(
+            "Tool completed",
+            extra={
+                "scan_id": scan_id,
+                "task": task_type,
+                "log_file": str(log_file)
+            }
+        )
     except Exception as exc:
         logger.exception("Tool execution failed")
         notify_task_failure(task_id=task_id, error=str(exc))

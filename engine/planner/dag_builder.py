@@ -42,7 +42,9 @@ def build_scan_dag(scan_request: Dict) -> List[TaskDescriptor]:
         retries_allowed=1,
     )
     tasks.append(correlation_task)
-
+    
+    for t in correlation_task:
+        print(t.task_id, "deps:", t.dependencies)
     # -----------------------------
     # Optional AI task
     # -----------------------------

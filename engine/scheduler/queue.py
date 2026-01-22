@@ -14,7 +14,10 @@ class SchedulerQueue:
 
     def __init__(self):
         self._heap: list[Tuple[int, float, str]] = []
-
+        
+    def __len__(self) -> int:
+        return len(self._heap)
+    
     def push(self, priority: int, task_id: str) -> None:
         """
         Push a task into the queue.

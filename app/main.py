@@ -91,8 +91,48 @@ from app.models.user import UserCreate
 # -----------------------------
 # NEW: Scheduler lifecycle
 # -----------------------------
-from engine.scheduler.runtime import init_scheduler
+from engine.scheduler.runtime import init_scheduler, get_scheduler
 from engine.dispatch.callbacks import init_scheduler as init_dispatch_callbacks
+import threading
+import time
+import logging
+
+from engine.dispatch.celery_dispatch import CeleryDispatcher
+
+logger = logging.getLogger(__name__)
+
+def start_scheduler_thread():
+    print(">>> start_scheduler_thread() CALLED")
+
+    scheduler = get_scheduler()
+    print(">>> Scheduler instance obtained:", scheduler)
+
+    dispatcher = CeleryDispatcher(scheduler)
+    print(">>> CeleryDispatcher created")
+
+    def scheduler_loop():
+        print(">>> Sentinel scheduler loop started")
+        logger.info("Sentinel scheduler loop started")
+
+        while True:
+            try:
+                dispatched = dispatcher.run_once()
+                if dispatched:
+                    print(f">>> Dispatched {dispatched} task(s)")
+            except Exception as exc:
+                print(">>> Scheduler loop exception:", exc)
+                logger.exception("Scheduler dispatch loop error")
+
+            time.sleep(0.5)
+
+    thread = threading.Thread(
+        target=scheduler_loop,
+        daemon=True,
+        name="sentinel-scheduler-loop",
+    )
+
+    thread.start()
+    print(">>> Scheduler thread started:", thread)
 
 
 @asynccontextmanager
@@ -107,6 +147,7 @@ async def lifespan(app: FastAPI):
     """
 
     print("FastAPI application is starting up...")
+    
 
     # -------------------------------------------------
     # 1. Initialize database schema
@@ -144,30 +185,21 @@ async def lifespan(app: FastAPI):
     # -------------------------------------------------
     print("Initializing Sentinel scheduler...")
 
-    scheduler = init_scheduler(
+    init_scheduler(
         max_tokens=settings.SCHEDULER_MAX_TOKENS,
         max_concurrent_tasks=settings.SCHEDULER_MAX_CONCURRENT_TASKS,
     )
 
-    # Register scheduler with Celery dispatch callbacks
-    init_dispatch_callbacks(scheduler)
+    start_scheduler_thread()
 
     print("Sentinel scheduler initialized successfully.")
     print("Startup complete.")
 
-    # -------------------------------------------------
-    # Application is now running
-    # -------------------------------------------------
     yield
-
-    # -------------------------------------------------
-    # Shutdown phase
-    # -------------------------------------------------
+    
+    logger.info("Sentinel shutting down")
     print("FastAPI application is shutting down...")
 
-    # Future:
-    # - graceful scheduler shutdown
-    # - task drain / metrics flush
 
     await engine.dispose()
     print("Shutdown complete.")
@@ -183,15 +215,9 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# -------------------------------------------------
-# Include API routes
-# -------------------------------------------------
 app.include_router(api_router, prefix="/api")
 
 
-# -------------------------------------------------
-# Root / Health Check
-# -------------------------------------------------
 @app.get("/", tags=["Health Check"])
 async def root():
     """

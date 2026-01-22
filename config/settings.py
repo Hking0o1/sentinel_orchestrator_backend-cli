@@ -47,6 +47,7 @@ class Settings(BaseSettings):
 
     NOTIFICATION_WEBHOOK_URL: Optional[str] = None
     
+    SCAN_RESULTS_DIR: str = "/app/scan_results"
     # --- NEW: PostgreSQL Database Configuration ---
     POSTGRES_SERVER: str = "db"
     POSTGRES_USER: str

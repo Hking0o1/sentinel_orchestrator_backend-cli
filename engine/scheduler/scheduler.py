@@ -1,4 +1,6 @@
 from __future__ import annotations
+import time
+import logging
 from typing import Dict, Iterable, Callable, Optional
 from .policies import DefaultSchedulingPolicy
 from .dag import TaskDescriptor
@@ -9,6 +11,7 @@ from .resources import ResourceBudget
 from .registry import InFlightRegistry
 from config.settings import settings
 
+logger = logging.getLogger(__name__)
 
 BASE_COST = {
     "LIGHT": 10,
@@ -46,6 +49,8 @@ class ScanScheduler:
         metrics: Optional[object])-> None:
         
         # core primitives
+        self._dags = {}
+        self._dag_states = {}
         self.queue = SchedulerQueue()
         self.resources = ResourceBudget(settings.SCHEDULER_MAX_TOKENS)
         self.in_flight = InFlightRegistry()
@@ -69,6 +74,43 @@ class ScanScheduler:
 
         # task_id -> runtime state (scheduler-owned)
         self._task_state: Dict[str, TaskRuntimeState] = {}
+        
+    def register_scan_dag(self, scan_id: str, dag: list) -> None:
+        """
+        Register a new scan DAG.
+
+        Phase 1.5:
+        - `dag` is a List[TaskDescriptor]
+        - Queue stores ONLY task_id
+        """
+
+        if scan_id in self._dags:
+            raise ValueError(f"Scan {scan_id} already registered")
+
+        # Store immutable task definitions
+        self._dags[scan_id] = {task.task_id: task for task in dag}
+
+        # Initialize runtime state
+        self._dag_states[scan_id] = {
+            "pending": set(self._dags[scan_id].keys()),
+            "running": set(),
+            "completed": set(),
+            "failed": set(),
+            "blocked": set(),
+        }
+        logger.info(
+            "Scan DAG registered",
+            extra={"scan_id": scan_id, "task_count": len(dag)}
+        )
+        # Enqueue tasks that have NO dependencies
+        for task in dag:
+            if not task.dependencies:
+                self.queue.push(
+                    priority=0,          # base priority for new tasks
+                    task_id=task.task_id
+                )
+
+
 
     def submit_tasks(self, descriptors: Iterable[TaskDescriptor]) -> None:
         """
@@ -142,6 +184,12 @@ class ScanScheduler:
         """
 
         scheduled = 0
+        print(
+            ">>> Scheduler tick | ready:",
+            len(self.queue),
+            "| inflight:",
+            len(self._in_flight),
+        )
 
         while True:
             task_id = self.queue.pop()
@@ -244,6 +292,14 @@ class ScanScheduler:
                 self.metrics.inc("tasks_blocked_total")
                 self._block_descendants(child)
                 
+    def run(self):
+        logger.info("Scheduler loop started")
+        while True:
+            try:
+                self.tick()
+            except Exception:
+                logger.exception("Scheduler tick failed")
+            time.sleep(0.2)
     #dummy test
     def test_retry_exhaustion_blocks_children():
         # DAG: A -> B

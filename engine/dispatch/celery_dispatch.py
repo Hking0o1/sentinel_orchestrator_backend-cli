@@ -13,7 +13,9 @@ from engine.scheduler.scheduler import ScanScheduler
 from engine.scheduler.dag import TaskDescriptor
 
 from scanner import tasks as scanner_tasks
+import logging
 
+logger = logging.getLogger(__name__)
 
 class CeleryDispatcher:
     """
@@ -62,6 +64,10 @@ class CeleryDispatcher:
             "DAST_SQLMAP",
             "RESILIENCE",
         }:
+            logger.info(
+                "Dispatching task",
+                extra={"task_id": task_id}
+            )
             scanner_tasks.run_tool_task.delay(
                 task_id=task.task_id,
                 scan_id=task.scan_id,
