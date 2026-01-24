@@ -1,5 +1,7 @@
 import requests
 import urllib3
+import os
+import json
 from typing import Dict, Any, Optional
 from .utils import normalize_severity, get_logger
 from scanner.tools.registry import register_tool
@@ -8,9 +10,10 @@ from scanner.tools.registry import register_tool
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 log = get_logger("scanner.resilience")
 
-def run_resilience_check(target_url: Optional[str]) -> Dict[str, Any]:
+def run_resilience_check(target_url: Optional[str], output_dir: str,) -> Dict[str, Any]:
     log.info(f"Checking resilience for: {target_url}")
-    
+    os.makedirs(output_dir, exist_ok=True)
+
     if not target_url:
         return {"findings": [], "raw_report": ("Resilience_Check", "Skipped")}
         
@@ -57,6 +60,10 @@ def run_resilience_check(target_url: Optional[str]) -> Dict[str, Any]:
                 "tool": "Resilience Check", "severity": "LOW",
                 "title": "No Rate Limiting", "description": "Server allowed rapid request burst."
             })
+            
+        raw_report_path = os.path.join(output_dir, "resilience.json")
+        with open(raw_report_path, "w") as f:
+            json.dump(findings, f)
             
     except Exception:
         pass

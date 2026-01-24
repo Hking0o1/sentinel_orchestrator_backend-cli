@@ -1,10 +1,14 @@
 from typing import Dict, Any
 import uuid
-
+import json
+from pathlib import Path
+from config.settings import settings
+import logging
 from engine.planner.dag_builder import build_scan_dag
 from engine.scheduler.scheduler import ScanScheduler
+from app.models.scan import ScanProfile
 
-
+logger = logging.getLogger(__name__)
 class ScanSubmissionError(Exception):
     """Raised when a scan cannot be submitted."""
 
@@ -27,103 +31,104 @@ class ScanSubmitter:
 
     def __init__(self, scheduler: ScanScheduler):
         self._scheduler = scheduler
+        self._meta_dir = Path(settings.SCAN_RESULTS_DIR)
+        self._meta_dir.mkdir(parents=True, exist_ok=True)
         
         
-        
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
-    def submit_scan(self, scan_request: Dict[str, Any]) -> str:
-        """
-        Submit a scan into the engine.
+    def _write_scan_meta(self, scan_id: str, normalized: dict) -> None:
+        scan_dir = self._meta_dir / scan_id
+        scan_dir.mkdir(parents=True, exist_ok=True)
 
-        Returns:
-            scan_id (str)
-        """
+        meta_path = scan_dir / "meta.json"
+        if meta_path.exists():
+            return
+
+        profile = normalized["profile"]
+        if isinstance(profile, ScanProfile):
+            profile_value = profile.value
+        else:
+            profile_value = str(profile).lower()
+
+        meta = {
+            "scan_id": scan_id,
+            "profile": profile_value,     
+            "targets": normalized["targets"],
+            "auth_cookie": normalized.get("auth_cookie"),
+            "enable_ai": normalized.get("enable_ai", False),
+        }
+
+        with open(meta_path, "w", encoding="utf-8") as f:
+            json.dump(meta, f, indent=2)
+
+
+    
+    def submit_scan(self, scan_request: dict) -> None:
         try:
+            scan_id = scan_request.get("scan_id")
+            if not scan_id:
+                raise ValueError("scan_request missing scan_id")
+
+            scan_id = str(scan_id)
             normalized = self._normalize_request(scan_request)
-
-            scan_id = normalized["scan_id"]
-
+            self._write_scan_meta(scan_id, normalized)
+            normalized["scan_id"] = scan_id
             dag = build_scan_dag(normalized)
-            print(
-                    ">>> ScanSubmitter:",
-                    "scan_id =", scan_id,
-                    "| task_ids =", [t.task_id for t in dag],
-                )
-            
-            # Register with scheduler
-            self._scheduler.register_scan_dag(
-                scan_id=scan_id,
-                dag=dag,
+            self._scheduler.register_scan_dag(scan_id, dag)
+            logger.info(
+                "ScanSubmitter: scan_id=%s | tasks=%s",
+                scan_id,
+                [t.task_id for t in dag],
             )
-            print(">>> ScanSubmitter: DAG registered")
-            
-            return scan_id
 
         except Exception as exc:
             raise ScanSubmissionError(str(exc)) from exc
 
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
-    def _normalize_request(self, scan_request: Dict[str, Any]) -> Dict[str, Any]:
-        if not isinstance(scan_request, dict):
-            raise ValueError("scan_request must be a dictionary")
+    def _normalize_request(self, scan_request: dict) -> dict:
+        normalized: dict = {}
 
-        normalized = dict(scan_request)
+        raw_profile = scan_request.get("profile")
+        if not raw_profile:
+            raise ValueError("scan profile missing")
 
-        # --------------------------------------------------
-        # scan_id (engine-owned)
-        # --------------------------------------------------
-        if not normalized.get("scan_id"):
-            normalized["scan_id"] = str(uuid.uuid4())
+        if hasattr(raw_profile, "value"):
+            profile = raw_profile.value
+        else:
+            profile = str(raw_profile)
 
-        # --------------------------------------------------
-        # profile
-        # --------------------------------------------------
-        
-        profile = scan_request.get("profile")
-        if not profile:
-            raise ValueError("scan_request missing 'profile'")
-
-        profile = profile.lower()
+        profile = profile.upper()
         normalized["profile"] = profile
-        print(profile)
-        # --------------------------------------------------
-        # TARGET NORMALIZATION (CRITICAL FIX)
-        # --------------------------------------------------
-        targets = scan_request.get("targets", {})
+
+        targets: dict = {}
+
+        incoming_targets = scan_request.get("targets", {})
 
         if profile == "WEB":
             target_url = (
-                targets.get("target_url")
+                incoming_targets.get("target_url")
                 or scan_request.get("target_url")
                 or scan_request.get("target")
             )
 
             if not target_url:
-                raise ValueError("web scan requires 'target_url'")
+                raise ValueError("web scan requires target_url")
 
-            normalized["target_url"] = target_url
-        elif profile != "WEB":
+            targets["target_url"] = target_url
+
+        else:
             src_path = (
-                normalized.get("source_code_path")
-                or normalized.get("repo_path")
+                incoming_targets.get("source_code_path")
+                or scan_request.get("source_code_path")
+                or scan_request.get("src_path")
             )
 
             if not src_path:
                 raise ValueError("non-web scan requires source path")
 
-            normalized["source_code_path"] = src_path
-            targets["repo"] = src_path
+            targets["source_code_path"] = src_path
 
         normalized["targets"] = targets
 
-        # --------------------------------------------------
-        # defaults
-        # --------------------------------------------------
-        normalized.setdefault("enable_ai", False)
+        normalized["enable_ai"] = bool(scan_request.get("enable_ai", False))
+        normalized["auth_cookie"] = scan_request.get("auth_cookie")
 
         return normalized
-

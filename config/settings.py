@@ -54,9 +54,9 @@ class Settings(BaseSettings):
     POSTGRES_PASSWORD: str
     POSTGRES_DB: str
     
-    SCHEDULER_MAX_TOKENS: int = 12
-    SCHEDULER_MAX_CONCURRENT_TASKS: int = 6
-    SCHEDULER_MAX_HEAVY_TASKS: int = 1
+    SCHEDULER_MAX_TOKENS: int = 30
+    SCHEDULER_MAX_CONCURRENT_TASKS: int = 20
+    SCHEDULER_MAX_HEAVY_TASKS: int = 5
 
     # --- MinIO ---
     MINIO_ROOT_USER: str = "minioadmin"

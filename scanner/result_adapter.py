@@ -1,5 +1,3 @@
-# scanner/result_adapter.py
-
 from typing import Dict, Any
 
 from scanner.types import ToolResult, TaskResultSummary

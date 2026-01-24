@@ -1,24 +1,12 @@
 import inspect
+import logging
 from typing import Dict, Any, Callable
 
-
+logger = logging.getLogger(__name__)
 class ToolRunnerAdapter:
-    """
-    Normalizes heterogeneous tool runner signatures into a single call contract.
-
-    Supported input parameters (one required):
-    - target_url
-    - target
-    - src_path
-
-    Required:
-    - output_dir
-    """
-
     def __init__(self, runner: Callable[..., Dict[str, Any]]):
         self.runner = runner
-        self.sig = inspect.signature(runner)
-        self.params = self.sig.parameters
+        self._params = inspect.signature(runner).parameters
 
     def __call__(
         self,
@@ -26,43 +14,45 @@ class ToolRunnerAdapter:
         target_url: str | None = None,
         src_path: str | None = None,
         output_dir: str,
-        **extra,
+        **_,
     ) -> Dict[str, Any]:
+        return self.run(
+            target_url=target_url,
+            src_path=src_path,
+            output_dir=output_dir,
+        )
 
-        call_kwargs: Dict[str, Any] = {"output_dir": output_dir}
+    def run(
+        self,
+        *,
+        target_url: str | None = None,
+        src_path: str | None = None,
+        output_dir: str,
+    ) -> Dict[str, Any]:
+        call_kwargs = {"output_dir": output_dir}
 
-        # --- URL-based tools ---
-        if "target_url" in self.params:
-            if not target_url:
-                raise RuntimeError(
-                    f"{self.runner.__name__} requires target_url"
-                )
+        if "src_path" in self._params and src_path is not None:
+            call_kwargs["src_path"] = src_path
+
+        elif "target_url" in self._params and target_url is not None:
             call_kwargs["target_url"] = target_url
 
-        elif "target" in self.params:
-            if not target_url:
-                raise RuntimeError(
-                    f"{self.runner.__name__} requires target"
-                )
+        elif "target" in self._params and target_url is not None:
             call_kwargs["target"] = target_url
-
-        # --- Source-based tools ---
-        elif "src_path" in self.params:
-            if not src_path:
-                raise RuntimeError(
-                    f"{self.runner.__name__} requires src_path"
-                )
-            call_kwargs["src_path"] = src_path
 
         else:
             raise RuntimeError(
-                f"Unsupported tool signature: {self.runner.__name__}{self.sig}"
+                f"{self.runner.__name__} requires target_url or src_path"
             )
 
         try:
+            logger.info(
+                "Running tool | runner=%s | kwargs=%s",
+                self.runner.__name__,
+                call_kwargs,
+            )
             return self.runner(**call_kwargs)
-
         except TypeError as exc:
             raise RuntimeError(
-                f"Tool runner invocation failed: {self.runner.__name__}{self.sig}"
+                f"Tool runner signature mismatch: {self.runner.__name__}"
             ) from exc

@@ -8,14 +8,15 @@ def init_scheduler(scheduler: ScanScheduler):
     _scheduler = scheduler
 
 
-def notify_task_success(task_id: str, output: dict):
+def notify_task_success(task_id: str, output_summary: dict, artifacts: list[str]):
     if _scheduler is None:
         return
     assert _scheduler is not None
     _scheduler.on_task_complete(
         task_id=task_id,
         success=True,
-        output=output,
+        output_summary=output_summary,
+        artifacts=artifacts,
     )
 
 

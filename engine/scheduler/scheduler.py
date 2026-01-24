@@ -75,41 +75,30 @@ class ScanScheduler:
         # task_id -> runtime state (scheduler-owned)
         self._task_state: Dict[str, TaskRuntimeState] = {}
         
-    def register_scan_dag(self, scan_id: str, dag: list) -> None:
-        """
-        Register a new scan DAG.
+    def register_scan_dag(self, scan_id: str, dag: list[TaskDescriptor]) -> None:
+        self._dags[scan_id] = dag
 
-        Phase 1.5:
-        - `dag` is a List[TaskDescriptor]
-        - Queue stores ONLY task_id
-        """
-
-        if scan_id in self._dags:
-            raise ValueError(f"Scan {scan_id} already registered")
-
-        # Store immutable task definitions
-        self._dags[scan_id] = {task.task_id: task for task in dag}
-
-        # Initialize runtime state
-        self._dag_states[scan_id] = {
-            "pending": set(self._dags[scan_id].keys()),
-            "running": set(),
-            "completed": set(),
-            "failed": set(),
-            "blocked": set(),
-        }
-        logger.info(
-            "Scan DAG registered",
-            extra={"scan_id": scan_id, "task_count": len(dag)}
-        )
-        # Enqueue tasks that have NO dependencies
         for task in dag:
-            if not task.dependencies:
-                self.queue.push(
-                    priority=0,          # base priority for new tasks
-                    task_id=task.task_id
-                )
+            task_id = task.task_id
 
+            self.tasks[task_id] = task
+
+            rt = TaskRuntimeState(task_id)
+
+            if not task.dependencies:
+                rt.state = TaskState.READY
+                priority = task.cost_units
+                self.queue.push(priority, task_id)
+            else:
+                rt.state = TaskState.BLOCKED
+
+            self.runtime[task_id] = rt
+
+        logger.info(
+            "Registered scan DAG | scan_id=%s | tasks=%d",
+            scan_id,
+            len(dag),
+        )
 
 
     def submit_tasks(self, descriptors: Iterable[TaskDescriptor]) -> None:
@@ -216,6 +205,16 @@ class ScanScheduler:
 
             dispatch_fn(task_id, td)
             scheduled += 1
+            
+            logger.info(
+                "Task blocked | task_id=%s | cost=%s | reason=%s | inflight=%d | remaining_budget=%d",
+                task_id,
+                td.cost_units,
+                "resource_limit",
+                len(self._in_flight),
+                self.resources.can_acquire,
+            )
+
 
         return scheduled
     

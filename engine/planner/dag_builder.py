@@ -1,5 +1,6 @@
 from typing import List, Dict, Set, FrozenSet
 from uuid import uuid4
+import logging
 from engine.scheduler.dag import TaskDescriptor
 from engine.planner.cost_model import get_cost_tier, get_cost_units
 from engine.planner.exceptions import (
@@ -11,6 +12,7 @@ from app.models.scan import ScanProfile
 from engine.scheduler.types import TaskCostTier, TaskIdentity
 from scanner.tools.registry import get_tool, has_tool
 
+logger = logging.getLogger(__name__)
 
 def build_scan_dag(scan_request: Dict) -> List[TaskDescriptor]:
     """
@@ -21,10 +23,10 @@ def build_scan_dag(scan_request: Dict) -> List[TaskDescriptor]:
     """
 
     _validate_scan_request(scan_request)
-
     scan_id = scan_request["scan_id"]
     profile = scan_request["profile"]
-
+    
+    assert isinstance(profile, str), f"profile must be str, got {type(profile)}"
     tool_tasks = _build_tool_tasks(scan_id, profile)
 
     tasks: List[TaskDescriptor] = []
@@ -43,8 +45,6 @@ def build_scan_dag(scan_request: Dict) -> List[TaskDescriptor]:
     )
     tasks.append(correlation_task)
     
-    for t in correlation_task:
-        print(t.task_id, "deps:", t.dependencies)
     # -----------------------------
     # Optional AI task
     # -----------------------------
@@ -78,25 +78,36 @@ def build_scan_dag(scan_request: Dict) -> List[TaskDescriptor]:
     return tasks
 
 
-def _build_tool_tasks(scan_id: str, profile: ScanProfile) -> List[TaskDescriptor]:
+def _build_tool_tasks(scan_id: str, profile: str) -> List[TaskDescriptor]:
     """
     Build tool execution tasks based on scan profile.
+
+    NOTE:
+    - profile MUST be a normalized uppercase string
+      ("WEB", "DEVELOPER", "FULL")
     """
 
+    profile = profile.upper()
+
     profile_tool_map = {
-        ScanProfile.WEB: [
+        "WEB": [
             ("DAST_ZAP", 5),
             ("DAST_NIKTO", 3),
+            ("DAST_SQLMAP", 4),
+            ("RESILIENCE", 2),
         ],
-        ScanProfile.DEVELOPER: [
+        "DEVELOPER": [
             ("SAST", 3),
             ("SCA", 1),
+            
         ],
-        ScanProfile.FULL: [
+        "FULL": [
             ("SAST", 3),
             ("SCA", 1),
             ("DAST_ZAP", 5),
             ("DAST_NIKTO", 3),
+            ("DAST_SQLMAP", 4),
+            ("RESILIENCE", 2),
         ],
     }
 
@@ -116,8 +127,16 @@ def _build_tool_tasks(scan_id: str, profile: ScanProfile) -> List[TaskDescriptor
                 retries_allowed=2,
             )
         )
+    logger.info(
+        "DAG tools selected | scan_id=%s | profile=%s | tools=%s",
+        scan_id,
+        profile,
+        [t.task_type for t in tasks],
+    )
+
 
     return tasks
+
 
 
 def _validate_scan_request(scan_request: Dict) -> None:

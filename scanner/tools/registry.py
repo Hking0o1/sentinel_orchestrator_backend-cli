@@ -1,5 +1,3 @@
-# scanner/tools/registry.py
-
 from typing import Callable, Dict
 
 ToolRunner = Callable[..., list[str]]

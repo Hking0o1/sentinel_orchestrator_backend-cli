@@ -2,8 +2,6 @@ from scanner.celery_app import celery_app
 import os
 import logging
 from pathlib import Path
-from celery import shared_task
-from typing import Dict, Any
 from scanner.ai.chunker import chunk_findings_jsonl
 from scanner.ai.state import load_progress, save_progress
 from scanner.ai.summarizer import summarize_chunk
@@ -27,62 +25,45 @@ logger = logging.getLogger(__name__)
 __all__ = ["celery_app"]
 
 
-@shared_task(bind=True, autoretry_for=())
+@celery_app.task(bind=True, autoretry_for=())
 def run_tool_task(
     self,
     task_id: str,
     scan_id: str,
     task_type: str,
 ):
-    """
-    Execute a single tool task (Celery worker context).
-
-    - DB is used ONLY for validation / status
-    - Execution inputs are loaded from disk (meta.json)
-    - Tool execution is stateless and retry-safe
-    """
-
     db = None
     try:
-        # Sync DB session (identity check only)
         db = next(get_sync_db())
 
         scan = db.query(Scan).filter(Scan.id == scan_id).one_or_none()
-        if scan is None:
+        if not scan:
             raise RuntimeError(f"Scan not found: {scan_id}")
-        
-        scan_dir = Path(settings.SCAN_RESULTS_DIR) / scan_id
-        tool_dir = scan_dir / "tools"
-        tool_dir.mkdir(parents=True, exist_ok=True)
 
-        log_file = tool_dir / f"{task_type.lower()}.log"
-
-        logger.info("Starting tool execution",
-                    extra={"scan_id": scan_id, "task": task_type})
-                # Load execution context from disk
         ctx = load_execution_context(scan_id)
 
-        #  Resolve tool
+        output_dir = (
+            Path(settings.SCAN_RESULTS_DIR)
+            / scan_id
+            / task_type.lower()
+        )
+        output_dir.mkdir(parents=True, exist_ok=True)
+
         runner = get_tool(task_type)
         adapter = ToolRunnerAdapter(runner)
 
-        # Execute tool
-        result = adapter(
-            context=ExecutionScanContext(
-                scan_id=str(scan.id),
-                profile=scan.profile,
-                target_url=scan.target if scan.profile == ScanProfile.WEB else None,
-                src_path=None,
-                output_dir=str(tool_dir),  
-            )
+        result = adapter.run(
+            target_url=ctx.target_url,
+            src_path=ctx.src_path,
+            output_dir=str(output_dir),
         )
-        raw_report = result.get("raw_report")
+        logger.info(
+            "Tool finished | tool=%s | findings=%d | artifacts=%s",
+            task_type,
+            len(result.get("findings", [])),
+            result.get("raw_report"),
+        )
 
-        if raw_report:
-            with open(log_file, "w", encoding="utf-8") as f:
-                f.write(str(raw_report))
-                
-        # Notify scheduler
         notify_task_success(
             task_id=task_id,
             output_summary={
@@ -91,15 +72,7 @@ def run_tool_task(
             },
             artifacts=[result.get("raw_report")],
         )
-        
-        logger.info(
-            "Tool completed",
-            extra={
-                "scan_id": scan_id,
-                "task": task_type,
-                "log_file": str(log_file)
-            }
-        )
+
     except Exception as exc:
         logger.exception("Tool execution failed")
         notify_task_failure(task_id=task_id, error=str(exc))
@@ -109,7 +82,8 @@ def run_tool_task(
         if db:
             db.close()
 
-@shared_task(autoretry_for=())
+
+@celery_app.task(bind=True, autoretry_for=())
 def run_correlation_task(
     *,
     task_id: str,
@@ -154,7 +128,7 @@ def run_correlation_task(
         )
 
 
-@shared_task(bind=True, autoretry_for=())
+@celery_app.task(bind=True, autoretry_for=())
 def run_ai_summary_task(
     self,
     task_id: str,
@@ -216,7 +190,7 @@ def run_ai_summary_task(
         notify_task_failure(task_id=task_id, error=str(exc))
 
 
-@shared_task(bind=True, autoretry_for=())
+@celery_app.task(bind=True, autoretry_for=())
 def run_report_task(
     self,
     task_id: str,

@@ -68,6 +68,11 @@ class CeleryDispatcher:
                 "Dispatching task",
                 extra={"task_id": task_id}
             )
+            logger.info(
+                "Dispatching task | task_id=%s | type=%s | scan_id=%s",
+                task_id,
+                task_type,
+            )
             scanner_tasks.run_tool_task.delay(
                 task_id=task.task_id,
                 scan_id=task.scan_id,

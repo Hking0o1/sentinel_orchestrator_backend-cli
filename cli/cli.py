@@ -167,7 +167,7 @@ def handle_start_scan(token, args):
         table.add_column("Value", style="bold white")
         table.add_row("Job ID", data.get("job_id"))
         table.add_row("Profile", data.get("profile"))
-        table.add_row("Target", data.get("target_url") or "Local Source")
+        table.add_row("Target", scan_request.get("target_url") or scan_request.get("source_code_path") or "Local Source")
 
         console.print(table)
 

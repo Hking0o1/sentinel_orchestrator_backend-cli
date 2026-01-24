@@ -14,10 +14,12 @@ def load_execution_context(scan_id: str) -> ExecutionScanContext:
     with open(meta_path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
+    targets = data.get("targets", {})
+
     return ExecutionScanContext(
         scan_id=data["scan_id"],
         profile=ScanProfile(data["profile"]),
-        target_url=data.get("target_url"),
-        src_path=data.get("src_path"),
+        target_url=targets.get("target_url"),
+        src_path=targets.get("source_code_path"),
         auth_cookie=data.get("auth_cookie"),
     )
