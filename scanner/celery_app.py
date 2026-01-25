@@ -16,8 +16,13 @@ celery_app.conf.update(
     task_serializer="json",
     result_serializer="json",
     accept_content=["json"],
-    enable_utc=True,
-    timezone="UTC",
+
+    beat_schedule={
+        "nightly-scheduled-scans": {
+            "task": "scanner.tasks.dispatch_scheduled_scans",
+            "schedule": timedelta(hours=24),
+        }
+    },
 )
 
 # Beat schedules (keep minimal for now)

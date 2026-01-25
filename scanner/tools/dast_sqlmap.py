@@ -27,26 +27,19 @@ def run_sqlmap_scan(target_url: Optional[str], output_dir: str, timeout: int = S
 
     ensure_dir(output_dir)
     
-    # --- FIX: Smart Command Construction ---
-    # We no longer skip if '?' is missing. Instead, we adapt the command.
     cmd = [
-        "sqlmap", 
-        "-u", target_url, 
-        "--batch",            # Never ask for user input
-        "--random-agent",     # Use a random User-Agent to bypass basic filters
-        "--level=1",          # Level 1 is safe/fast
-        "--risk=1",           # Risk 1 avoids dangerous payloads
+        "sqlmap",
+        "-u", target_url,
+        "--batch",
+        "--random-agent",
+        "--threads=1",
+        "--level=1",
+        "--risk=1",
+        "--timeout=10",
     ]
 
-    # If there are no parameters in the URL, enable crawling
-    if '?' not in target_url:
-        log.info("No parameters detected in URL. Enabling SQLMap crawler (depth=2).")
-        cmd.append("--crawl=2")
-    else:
-        log.info("Parameters detected. Scanning specific URL.")
+    cmd.append("--crawl=2")
 
-    # Run the scan
-    # We execute from output_dir to try and capture SQLMap's generated files
     success, output = run_subprocess(cmd, cwd=output_dir, timeout=timeout)
     
     findings = []

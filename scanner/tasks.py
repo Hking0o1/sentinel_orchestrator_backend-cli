@@ -16,10 +16,12 @@ from scanner.reporting.pdf_writer import write_pdf_report
 from app.db.sync_session import get_sync_db
 from app.db.session import get_db_session
 from app.models.scan import Scan, ScanProfile
+from engine.scheduler.runtime import get_scheduler
 from config.settings import settings
 from scanner.tools.adapter import ToolRunnerAdapter
 from engine.runtime.scan_context import ExecutionScanContext
 from engine.runtime.meta_loader import load_execution_context
+
 
 logger = logging.getLogger(__name__)
 __all__ = ["celery_app"]
@@ -83,6 +85,36 @@ def run_tool_task(
             db.close()
 
 
+
+@celery_app.task(
+    name="scanner.tasks.dispatch_scheduled_scans",
+    bind=True,
+    autoretry_for=(),
+)
+def dispatch_scheduled_scans(self):
+    """
+    Celery Beat entrypoint.
+
+    PURPOSE:
+    - Wake up Sentinel Scheduler on a schedule
+    - NEVER execute tools directly
+    """
+
+    logger.info("[BEAT] Triggering scheduled scan dispatch")
+
+    scheduler = get_scheduler()
+
+    # One controlled tick
+    dispatched = scheduler.schedule_once()
+
+    logger.info(
+        "[BEAT] Scheduler tick complete | dispatched=%s",
+        dispatched,
+    )
+
+    return dispatched
+    
+    
 @celery_app.task(bind=True, autoretry_for=())
 def run_correlation_task(
     *,

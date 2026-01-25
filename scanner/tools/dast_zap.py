@@ -1,5 +1,6 @@
 import os
 import json
+import time
 from typing import Dict, Any, Optional
 from .utils import (
     run_subprocess, is_tool_installed, normalize_severity, 
@@ -11,7 +12,8 @@ log = get_logger("scanner.dast.zap")
 
 def run_zap_scan(target_url: Optional[str], output_dir: str, auth_cookie: Optional[str] = None) -> Dict[str, Any]:
     log.info(f"Starting ZAP scan on: {target_url}")
-
+    MAX_RUNTIME_SECONDS = 15 * 60  
+    
     if not target_url:
         return {"findings": [], "raw_report": ("DAST_ZAP", "Skipped: No URL")}
 
@@ -34,8 +36,24 @@ def run_zap_scan(target_url: Optional[str], output_dir: str, auth_cookie: Option
         replacer = f"-config replacer.full_list(0).description=auth -config replacer.full_list(0).enabled=true -config replacer.full_list(0).matchtype=REQ_HEADER -config replacer.full_list(0).matchstr=Cookie -config replacer.full_list(0).regex=false -config replacer.full_list(0).replacement={auth_cookie}"
         cmd.extend(["-z", replacer])
     
+    start = time.time()
+    
+    while zap.is_running():
+        if time.time() - start > MAX_RUNTIME_SECONDS:
+            zap.stop_scan()
+            break
+        time.sleep(5)
+    
     success, output = run_subprocess(cmd, timeout=DEFAULT_CMD_TIMEOUT)
 
+    if not success:
+        log.error("ZAP execution failed")
+        log.error(output)
+        return {
+            "findings": [],
+            "raw_report": ("DAST_ZAP", f"FAILED: {output}")
+        }
+        
     findings = []
     json_report = os.path.join(output_dir, "zap_report.json")
 

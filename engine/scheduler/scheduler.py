@@ -1,7 +1,9 @@
 from __future__ import annotations
 import time
 import logging
+from datetime import datetime
 from typing import Dict, Iterable, Callable, Optional
+from croniter import croniter
 from .policies import DefaultSchedulingPolicy
 from .dag import TaskDescriptor
 from .state import TaskRuntimeState
@@ -242,6 +244,12 @@ class ScanScheduler:
         else:
             self._handle_failure(task_id, error)
             
+    def evaluate_schedules(self, now: datetime):
+        for schedule in self._schedules:
+            if cron_matches(schedule.cron, now, schedule.last_run_at):
+                self.enqueue_scan(schedule.scan_id)
+                schedule.last_run_at = now   
+                    
     def _handle_success(self, task_id: str, output_paths: Optional[list[str]]) -> None:
         rt = self.runtime[task_id]
         rt.state = TaskState.DONE

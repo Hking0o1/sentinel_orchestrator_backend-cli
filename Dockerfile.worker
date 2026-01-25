@@ -84,4 +84,4 @@ COPY ./scanner /app/scanner
 COPY ./engine /app/engine
 # --- Entrypoint ---
 # The command to run the Celery worker.
-CMD ["celery", "-A", "scanner.celery_app.celery_app", "worker", "--loglevel=info", "-P", "solo"]
+CMD ["celery", "-A", "scanner.celery_app.celery_app", "worker", "--concurrency=4" , "--loglevel=info", "-P", "solo"]

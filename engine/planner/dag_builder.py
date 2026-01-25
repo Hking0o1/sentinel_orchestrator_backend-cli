@@ -92,9 +92,6 @@ def _build_tool_tasks(scan_id: str, profile: str) -> List[TaskDescriptor]:
     profile_tool_map = {
         "WEB": [
             ("DAST_ZAP", 5),
-            ("DAST_NIKTO", 3),
-            ("DAST_SQLMAP", 4),
-            ("RESILIENCE", 2),
         ],
         "DEVELOPER": [
             ("SAST", 3),
