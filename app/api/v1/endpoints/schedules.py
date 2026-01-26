@@ -2,7 +2,9 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List
 from uuid import UUID
-
+from engine.scheduler.runtime import get_scheduler
+from engine.services.scan_submitter import ScanSubmitter
+import logging
 from app.models.user import User
 from app.models.schedule import ScanSchedule, ScanScheduleCreate, ScanScheduleUpdate
 from app.core.security import get_current_user
@@ -123,3 +125,42 @@ async def delete_existing_scan_schedule(
     # Now, delete it
     await crud.delete_scan_schedule(db, schedule_id=schedule_id)
     return
+
+
+
+router = APIRouter()
+logger = logging.getLogger(__name__)
+
+@router.post("/internal/dispatch-due")
+async def dispatch_due_schedules(
+    db: AsyncSession = Depends(get_db_session),
+):
+    """
+    INTERNAL endpoint.
+    Triggered by Celery Beat.
+    """
+
+    scheduler = get_scheduler()
+    submitter = ScanSubmitter(scheduler)
+
+    schedules = await crud.get_due_schedules(db)
+
+    count = 0
+    for sched in schedules:
+        submitter.submit_scan(
+            {
+                "scan_id": str(sched.id),
+                "profile": sched.profile,
+                "targets": sched.targets,
+                "auth_cookie": sched.auth_cookie,
+            }
+        )
+        count += 1
+
+        # IMPORTANT: update next_run_at here (even naive)
+        sched.next_run_at = sched.compute_next_run()
+        await db.commit()
+
+    logger.info("Dispatched %d scheduled scans", count)
+
+    return {"dispatched": count}

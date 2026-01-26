@@ -165,7 +165,7 @@ def handle_start_scan(token, args):
         table = Table(title="Scan Details", show_header=True, header_style="bold magenta")
         table.add_column("Field", style="dim")
         table.add_column("Value", style="bold white")
-        table.add_row("Job ID", data.get("job_id"))
+        table.add_row("scan ID", data.get("scan_id"))
         table.add_row("Profile", data.get("profile"))
         table.add_row("Target", scan_request.get("target_url") or scan_request.get("source_code_path") or "Local Source")
 

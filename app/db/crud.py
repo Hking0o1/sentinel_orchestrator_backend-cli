@@ -3,7 +3,7 @@ from sqlalchemy.future import select
 from uuid import UUID
 from datetime import datetime, timezone
 from typing import Optional, List
-
+from app.models.schedule import ScanScheduleBase
 from app.db.models import User, ScanJob, ScanSchedule
 from app.models.user import UserCreate
 from app.models.scan import ScanCreate, ScanJobUpdate, ScanStatus
@@ -113,6 +113,19 @@ async def delete_scan_schedule(db: AsyncSession, schedule_id: UUID) -> bool:
     await db.delete(db_schedule)
     await db.commit()
     return True
+
+
+async def get_due_schedules(db: AsyncSession):
+    now = datetime.utcnow()
+
+    result = await db.execute(
+        select(ScanScheduleBase).where(
+            ScanScheduleBase.is_active.is_(True),
+            ScanScheduleBase.next_run_at <= now,
+        )
+    )
+    return result.scalars().all()
+
 
 async def update_user(db: AsyncSession, user_id: UUID, user_in: UserUpdate) -> User:
     """

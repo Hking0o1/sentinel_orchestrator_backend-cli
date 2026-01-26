@@ -2,6 +2,7 @@ from scanner.celery_app import celery_app
 import os
 import logging
 from pathlib import Path
+import asyncio
 from scanner.ai.chunker import chunk_findings_jsonl
 from scanner.ai.state import load_progress, save_progress
 from scanner.ai.summarizer import summarize_chunk
@@ -21,10 +22,13 @@ from config.settings import settings
 from scanner.tools.adapter import ToolRunnerAdapter
 from engine.runtime.scan_context import ExecutionScanContext
 from engine.runtime.meta_loader import load_execution_context
+from engine.services.scan_submitter import ScanSubmitter
+from engine.services.schedule_loader import ScheduleLoader
 
 
 logger = logging.getLogger(__name__)
 __all__ = ["celery_app"]
+
 
 
 @celery_app.task(bind=True, autoretry_for=())
@@ -59,10 +63,19 @@ def run_tool_task(
             src_path=ctx.src_path,
             output_dir=str(output_dir),
         )
+        findings = result.get("findings", [])
+
+        # Contract normalization (enterprise-grade safety)
+        if isinstance(findings, int):
+            findings_count = findings
+        elif isinstance(findings, list):
+            findings_count = len(findings)
+        else:
+            findings_count = 0
         logger.info(
             "Tool finished | tool=%s | findings=%d | artifacts=%s",
             task_type,
-            len(result.get("findings", [])),
+            findings_count,
             result.get("raw_report"),
         )
 
@@ -70,9 +83,10 @@ def run_tool_task(
             task_id=task_id,
             output_summary={
                 "task_type": task_type,
-                "artifact_count": 1,
+                "finding_count": findings_count,
+                "artifact_count": len(result.get("raw_report", [])) if result.get("raw_report") else 1,
             },
-            artifacts=[result.get("raw_report")],
+            artifacts=[result.get("raw_report")] if result.get("raw_report") else [],
         )
 
     except Exception as exc:
@@ -91,28 +105,22 @@ def run_tool_task(
     bind=True,
     autoretry_for=(),
 )
-def dispatch_scheduled_scans(self):
+def dispatch_scheduled_scans():
     """
-    Celery Beat entrypoint.
-
-    PURPOSE:
-    - Wake up Sentinel Scheduler on a schedule
-    - NEVER execute tools directly
+    Periodic task (Celery Beat).
+    Pulls schedules from DB and submits scans.
     """
-
-    logger.info("[BEAT] Triggering scheduled scan dispatch")
-
     scheduler = get_scheduler()
+    submitter = ScanSubmitter(scheduler)
+    loader = ScheduleLoader(submitter)
 
-    # One controlled tick
-    dispatched = scheduler.schedule_once()
+    async def _run():
+        async with get_db_session() as db:
+            return await loader.dispatch_due_schedules(db)
 
-    logger.info(
-        "[BEAT] Scheduler tick complete | dispatched=%s",
-        dispatched,
-    )
+    return asyncio.run(_run())
 
-    return dispatched
+
     
     
 @celery_app.task(bind=True, autoretry_for=())

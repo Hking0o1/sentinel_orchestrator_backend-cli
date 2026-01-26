@@ -76,16 +76,23 @@ class ScanScheduler:
 
         # task_id -> runtime state (scheduler-owned)
         self._task_state: Dict[str, TaskRuntimeState] = {}
+        self._dependents: dict[str, set[str]] = {}
         
     def register_scan_dag(self, scan_id: str, dag: list[TaskDescriptor]) -> None:
         self._dags[scan_id] = dag
-
+        
+        for task in dag:
+            self._dependents.setdefault(task.task_id, set())
+            
         for task in dag:
             task_id = task.task_id
-
             self.tasks[task_id] = task
 
             rt = TaskRuntimeState(task_id)
+
+            # Build reverse dependency index
+            for dep in task.dependencies:
+                self._dependents.setdefault(dep, set()).add(task.task_id)
 
             if not task.dependencies:
                 rt.state = TaskState.READY
@@ -101,7 +108,8 @@ class ScanScheduler:
             scan_id,
             len(dag),
         )
-
+        
+        
 
     def submit_tasks(self, descriptors: Iterable[TaskDescriptor]) -> None:
         """
@@ -243,6 +251,7 @@ class ScanScheduler:
             self._handle_success(task_id, output_paths)
         else:
             self._handle_failure(task_id, error)
+
             
     def evaluate_schedules(self, now: datetime):
         for schedule in self._schedules:
@@ -250,17 +259,35 @@ class ScanScheduler:
                 self.enqueue_scan(schedule.scan_id)
                 schedule.last_run_at = now   
                     
-    def _handle_success(self, task_id: str, output_paths: Optional[list[str]]) -> None:
+    def _handle_success(self, task_id: str, output_paths: list[str] | None):
         rt = self.runtime[task_id]
-        rt.state = TaskState.DONE
-        rt.output_paths = output_paths or []
+        rt.state = TaskState.COMPLETED
 
-        self.metrics.inc("tasks_completed_total")
+        if output_paths:
+            rt.output_paths.extend(output_paths)
 
-        # unlock children
-        for child in self.children.get(task_id, []):
-            self._evaluate_readiness(child)
-            
+        # 🔑 UNBLOCK DEPENDENTS
+        for dependent_id in self._dependents.get(task_id, []):
+            dep_rt = self.runtime[dependent_id]
+            dep_td = self.tasks[dependent_id]
+
+            if dep_rt.state != TaskState.BLOCKED:
+                continue
+
+            # Check if ALL dependencies are completed
+            if all(
+                self.runtime[d].state == TaskState.COMPLETED
+                for d in dep_td.dependencies
+            ):
+                dep_rt.state = TaskState.READY
+                priority = dep_td.cost_units
+                self.queue.push(priority, dependent_id)
+
+                logger.info(
+                    "Task unblocked | task_id=%s | ready",
+                    dependent_id,
+                )
+   
     def _handle_failure(self, task_id: str, error: Optional[str]) -> None:
         rt = self.runtime[task_id]
         td = self.tasks[task_id]

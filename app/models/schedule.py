@@ -4,8 +4,6 @@ from pydantic.alias_generators import to_camel
 from uuid import UUID
 from typing import Optional
 from app.models.scan import ScanProfile
-
-# We need a validator for crontab strings
 from croniter import croniter
 
 class ScanScheduleBase(pydantic.BaseModel):
@@ -24,7 +22,7 @@ class ScanScheduleBase(pydantic.BaseModel):
     source_code_path: Optional[str] = None
     auth_cookie: Optional[str] = None
 
-    @pydantic.validator('crontab')
+    @pydantic.field_validator('crontab')
     def validate_crontab(cls, v):
         """
         Validates that the provided string is a valid crontab.
