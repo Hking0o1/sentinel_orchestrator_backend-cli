@@ -1,6 +1,7 @@
 from __future__ import annotations
 import time
 import json
+import os 
 import logging
 from datetime import datetime
 from typing import Dict, Iterable, Callable, Optional
@@ -78,6 +79,10 @@ class ScanScheduler:
         # task_id -> runtime state (scheduler-owned)
         self._task_state: Dict[str, TaskRuntimeState] = {}
         self._dependents: dict[str, set[str]] = {}
+        logger.error(
+            "SCHEDULER INIT | pid=%s",
+            os.getpid(),
+        )
     
     def _state_snapshot(self, prefix: str = ""):
         snapshot = {
@@ -223,7 +228,7 @@ class ScanScheduler:
             "| inflight:",
             len(self._in_flight),
         )
-
+        
         while True:
             task_id = self.queue.pop()
             if task_id is None:
@@ -315,54 +320,46 @@ class ScanScheduler:
     def _handle_success(self, task_id: str, output_paths: list[str] | None):
         rt = self.runtime[task_id]
         rt.state = TaskState.COMPLETED
+
         if output_paths:
             rt.output_paths.extend(output_paths)
-            
+
         logger.error(
             "HANDLE SUCCESS | task=%s | dependents=%s",
             task_id,
             list(self._dependents.get(task_id, [])),
         )
 
-        # 🔑 UNBLOCK DEPENDENTS
         for dependent_id in self._dependents.get(task_id, []):
-            for dep_id in self._dependents.get(task_id, []):
-                dep_td = self.tasks[dep_id]
-                dep_rt = self.runtime[dep_id]
+            dep_td = self.tasks[dependent_id]
+            dep_rt = self.runtime[dependent_id]
 
-                logger.error(
-                    "CHECK DEP | parent=%s -> child=%s | child_state=%s | deps=%s",
-                    task_id,
-                    dep_id,
-                    dep_rt.state.name,
-                    list(dep_td.dependencies),
-                )
-
-                for d in dep_td.dependencies:
-                    logger.error(
-                        "DEP STATE | %s = %s",
-                        d,
-                        self.runtime[d].state.name,
-                    )
+            logger.error(
+                "CHECK DEP | parent=%s -> child=%s | child_state=%s | deps=%s",
+                task_id,
+                dependent_id,
+                dep_rt.state.name,
+                list(dep_td.dependencies),
+            )
 
             if dep_rt.state != TaskState.BLOCKED:
                 continue
 
-            # Check if ALL dependencies are completed
             if all(
                 self.runtime[d].state == TaskState.COMPLETED
                 for d in dep_td.dependencies
             ):
-                
                 dep_rt.state = TaskState.READY
                 priority = dep_td.cost_units
                 self.queue.push(priority, dependent_id)
 
                 logger.info(
-                    "Task unblocked | task_id=%s | ready",
+                    "Task unblocked | task_id=%s",
                     dependent_id,
                 )
+
         self._state_snapshot("AFTER UNBLOCK")
+
 
    
     def _handle_failure(self, task_id: str, error: Optional[str]) -> None:

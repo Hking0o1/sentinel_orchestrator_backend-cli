@@ -30,15 +30,12 @@ logger = logging.getLogger(__name__)
 __all__ = ["celery_app"]
 
 
-
 @celery_app.task(bind=True, autoretry_for=())
-def run_tool_task(
-    self,
-    task_id: str,
-    scan_id: str,
-    task_type: str,
-):
+def run_tool_task(self, task_id: str, scan_id: str, task_type: str):
     db = None
+    output_paths = []
+    error = None
+
     try:
         db = next(get_sync_db())
 
@@ -48,11 +45,7 @@ def run_tool_task(
 
         ctx = load_execution_context(scan_id)
 
-        output_dir = (
-            Path(settings.SCAN_RESULTS_DIR)
-            / scan_id
-            / task_type.lower()
-        )
+        output_dir = Path(settings.SCAN_RESULTS_DIR) / scan_id / task_type.lower()
         output_dir.mkdir(parents=True, exist_ok=True)
 
         runner = get_tool(task_type)
@@ -63,39 +56,36 @@ def run_tool_task(
             src_path=ctx.src_path,
             output_dir=str(output_dir),
         )
+
+        if result.get("raw_report"):
+            output_paths.append(result["raw_report"])
+
         findings = result.get("findings", [])
-        # Contract normalization (enterprise-grade safety)
-        if isinstance(findings, int):
-            findings_count = findings
-        elif isinstance(findings, list):
-            findings_count = len(findings)
-        else:
-            findings_count = 0
+        findings_count = findings if isinstance(findings, int) else len(findings)
+
         logger.info(
             "Tool finished | tool=%s | findings=%d | artifacts=%s",
             task_type,
             findings_count,
-            result.get("raw_report"),
-        )
-
-        notify_task_success(
-            task_id=task_id,
-            output_summary={
-                "task_type": task_type,
-                "finding_count": findings_count,
-                "artifact_count": len(result.get("raw_report", [])) if result.get("raw_report") else 1,
-            },
-            artifacts=[result.get("raw_report")] if result.get("raw_report") else [],
+            output_paths,
         )
 
     except Exception as exc:
+        error = str(exc)
         logger.exception("Tool execution failed")
-        notify_task_failure(task_id=task_id, error=str(exc))
-        raise
 
     finally:
+        if error:
+            notify_task_failure(task_id=task_id, error=error)
+        else:
+            notify_task_success(
+                task_id=task_id,
+                output_paths=output_paths,
+            )
+
         if db:
             db.close()
+
 
 
 
