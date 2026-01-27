@@ -1,5 +1,3 @@
-# engine/planner/cost_model.py
-
 """
 Cost & resource model for Sentinel.
 
@@ -22,33 +20,7 @@ COST_TIERS: Dict[str, int] = {
 }
 
 DEFAULT_TIER = "MEDIUM"
-DEFAULT_UNITS = 3
-
-# engine/planner/cost_model.py
-
-"""
-Cost & resource model for Sentinel.
-
-Cost is declared by tools themselves via metadata.
-Planner only resolves it.
-"""
-
-from typing import Dict
-import importlib
-
-# -------------------------
-# COST TIERS (GLOBAL POLICY)
-# -------------------------
-
-COST_TIERS: Dict[str, int] = {
-    "LIGHT": 10,
-    "MEDIUM": 20,
-    "HEAVY": 40,
-    "POST_PROCESS": 60,
-}
-
-DEFAULT_TIER = "MEDIUM"
-DEFAULT_UNITS = 3
+DEFAULT_UNITS = 5
 
 
 def resolve_task_cost(task_type: str) -> tuple[str, int]:

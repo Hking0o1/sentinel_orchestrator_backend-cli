@@ -1,5 +1,6 @@
 from __future__ import annotations
 import time
+import json
 import logging
 from datetime import datetime
 from typing import Dict, Iterable, Callable, Optional
@@ -77,13 +78,34 @@ class ScanScheduler:
         # task_id -> runtime state (scheduler-owned)
         self._task_state: Dict[str, TaskRuntimeState] = {}
         self._dependents: dict[str, set[str]] = {}
-        
+    
+    def _state_snapshot(self, prefix: str = ""):
+        snapshot = {
+            "ready_queue": list(self.queue._heap),
+            "runtime": {
+                tid: rt.state.name
+                for tid, rt in self.runtime.items()
+            },
+            "inflight": dict(self.in_flight._tasks),
+        }
+
+        logger.error(
+            "%s SCHEDULER SNAPSHOT:\n%s",
+            prefix,
+            json.dumps(snapshot, indent=2, default=str),
+        )
+    
     def register_scan_dag(self, scan_id: str, dag: list[TaskDescriptor]) -> None:
         self._dags[scan_id] = dag
         
         for task in dag:
             self._dependents.setdefault(task.task_id, set())
-            
+        logger.error(
+            "REGISTER DAG | scan_id=%s | tasks=%s",
+            scan_id,
+            [t.task_id for t in dag],
+        )
+        
         for task in dag:
             task_id = task.task_id
             self.tasks[task_id] = task
@@ -93,7 +115,12 @@ class ScanScheduler:
             # Build reverse dependency index
             for dep in task.dependencies:
                 self._dependents.setdefault(dep, set()).add(task.task_id)
-
+            logger.error(
+                "TASK REGISTER | id=%s | deps=%s | cost=%s",
+                task.task_id,
+                list(task.dependencies),
+                task.cost_units,
+            )
             if not task.dependencies:
                 rt.state = TaskState.READY
                 priority = task.cost_units
@@ -102,6 +129,7 @@ class ScanScheduler:
                 rt.state = TaskState.BLOCKED
 
             self.runtime[task_id] = rt
+        self._state_snapshot("AFTER DAG REGISTER")
 
         logger.info(
             "Registered scan DAG | scan_id=%s | tasks=%d",
@@ -181,7 +209,13 @@ class ScanScheduler:
             called with (task_id, TaskDescriptor)
             responsible for execution (Celery later)
         """
+        logger.error(
+            "SCHEDULER TICK ENTER | ready=%d | inflight=%d",
+            len(self.queue),
+            len(self._in_flight),
+        )
 
+        self._state_snapshot("TICK START")
         scheduled = 0
         print(
             ">>> Scheduler tick | ready:",
@@ -212,10 +246,23 @@ class ScanScheduler:
 
             self.metrics.inc("tasks_scheduled_total")
             self.metrics.set_gauge("in_flight_tasks", len(self.in_flight))
-
+            logger.error(
+                "DISPATCH DECISION | task_id=%s | cost=%s",
+                task_id,
+                td.cost_units,
+            )
             dispatch_fn(task_id, td)
+            self._state_snapshot("AFTER DISPATCH")
             scheduled += 1
-            
+            if (
+                not self.queue
+                and not self.in_flight
+                and all(
+                    rt.state in {TaskState.COMPLETED, TaskState.FAILED}
+                    for rt in self.runtime.values()
+                )
+            ):
+                logger.info("SCAN COMPLETE")
             logger.info(
                 "Task blocked | task_id=%s | cost=%s | reason=%s | inflight=%d | remaining_budget=%d",
                 task_id,
@@ -239,13 +286,19 @@ class ScanScheduler:
         Worker callback.
         The ONLY way execution influences scheduler state.
         """
-
+        logger.error(
+            "SCHEDULER CALLBACK RECEIVED | task_id=%s | success=%s",
+            task_id,
+            success,
+        )
         rt = self.runtime[task_id]
         td = self.tasks[task_id]
 
         # resource release
         units = self.in_flight.remove(task_id)
         self.resources.release(units)
+        
+        self._state_snapshot("AFTER RESOURCE RELEASE")
 
         if success:
             self._handle_success(task_id, output_paths)
@@ -262,14 +315,35 @@ class ScanScheduler:
     def _handle_success(self, task_id: str, output_paths: list[str] | None):
         rt = self.runtime[task_id]
         rt.state = TaskState.COMPLETED
-
         if output_paths:
             rt.output_paths.extend(output_paths)
+            
+        logger.error(
+            "HANDLE SUCCESS | task=%s | dependents=%s",
+            task_id,
+            list(self._dependents.get(task_id, [])),
+        )
 
         # 🔑 UNBLOCK DEPENDENTS
         for dependent_id in self._dependents.get(task_id, []):
-            dep_rt = self.runtime[dependent_id]
-            dep_td = self.tasks[dependent_id]
+            for dep_id in self._dependents.get(task_id, []):
+                dep_td = self.tasks[dep_id]
+                dep_rt = self.runtime[dep_id]
+
+                logger.error(
+                    "CHECK DEP | parent=%s -> child=%s | child_state=%s | deps=%s",
+                    task_id,
+                    dep_id,
+                    dep_rt.state.name,
+                    list(dep_td.dependencies),
+                )
+
+                for d in dep_td.dependencies:
+                    logger.error(
+                        "DEP STATE | %s = %s",
+                        d,
+                        self.runtime[d].state.name,
+                    )
 
             if dep_rt.state != TaskState.BLOCKED:
                 continue
@@ -279,6 +353,7 @@ class ScanScheduler:
                 self.runtime[d].state == TaskState.COMPLETED
                 for d in dep_td.dependencies
             ):
+                
                 dep_rt.state = TaskState.READY
                 priority = dep_td.cost_units
                 self.queue.push(priority, dependent_id)
@@ -287,6 +362,8 @@ class ScanScheduler:
                     "Task unblocked | task_id=%s | ready",
                     dependent_id,
                 )
+        self._state_snapshot("AFTER UNBLOCK")
+
    
     def _handle_failure(self, task_id: str, error: Optional[str]) -> None:
         rt = self.runtime[task_id]
@@ -333,7 +410,7 @@ class ScanScheduler:
                 self.tick()
             except Exception:
                 logger.exception("Scheduler tick failed")
-            time.sleep(0.2)
+            time.sleep(20000)
     #dummy test
     def test_retry_exhaustion_blocks_children():
         # DAG: A -> B

@@ -1,8 +1,9 @@
 import heapq
 import time
+import logging
 from typing import Optional, Tuple
 
-
+logger = logging.getLogger(__name__)
 class SchedulerQueue:
     """
     Priority queue for schedulable tasks.
@@ -25,6 +26,8 @@ class SchedulerQueue:
         priority: lower value = higher priority
         timestamp: ensures FIFO ordering for equal priority
         """
+        logger.error("QUEUE PUSH | priority=%s | task_id=%s", priority, task_id)
+
         heapq.heappush(self._heap, (priority, time.monotonic(), task_id))
 
     def pop(self) -> Optional[str]:
@@ -39,6 +42,8 @@ class SchedulerQueue:
             return None
 
         _, _, task_id = heapq.heappop(self._heap)
+        
+        logger.error("QUEUE POP | task_id=%s", task_id)
         return task_id
 
     def __len__(self) -> int:

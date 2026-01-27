@@ -64,7 +64,6 @@ def run_tool_task(
             output_dir=str(output_dir),
         )
         findings = result.get("findings", [])
-
         # Contract normalization (enterprise-grade safety)
         if isinstance(findings, int):
             findings_count = findings
