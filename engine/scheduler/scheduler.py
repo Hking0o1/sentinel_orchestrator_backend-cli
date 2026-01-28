@@ -290,25 +290,67 @@ class ScanScheduler:
         """
         Worker callback.
         The ONLY way execution influences scheduler state.
+        MUST be idempotent and never crash.
         """
-        logger.error(
-            "SCHEDULER CALLBACK RECEIVED | task_id=%s | success=%s",
+
+        logger.info(
+            "ON_TASK_COMPLETE | task_id=%s | success=%s",
             task_id,
             success,
         )
+
+        # ---- Safety checks (CRITICAL) ----
+        if task_id not in self.runtime:
+            logger.error("UNKNOWN TASK COMPLETION | task_id=%s", task_id)
+            return
+
         rt = self.runtime[task_id]
         td = self.tasks[task_id]
 
-        # resource release
-        units = self.in_flight.remove(task_id)
-        self.resources.release(units)
-        
+        # ---- Idempotency guard ----
+        if rt.state in ("COMPLETED", "FAILED"):
+            logger.warning(
+                "DUPLICATE COMPLETION EVENT IGNORED | task_id=%s | state=%s",
+                task_id,
+                rt.state,
+            )
+            return
+
+        # ---- Resource cleanup (SAFE) ----
+        if task_id in self.in_flight:
+            try:
+                units = self.in_flight.remove(task_id)
+                self.resources.release(units)
+                logger.info(
+                    "INFLIGHT REMOVED | task_id=%s | units=%d",
+                    task_id,
+                    units,
+                )
+            except Exception:
+                logger.exception(
+                    "INFLIGHT CLEANUP FAILED | task_id=%s",
+                    task_id,
+                )
+        else:
+            logger.warning(
+                "TASK NOT FOUND IN INFLIGHT | task_id=%s",
+                task_id,
+            )
+
         self._state_snapshot("AFTER RESOURCE RELEASE")
 
-        if success:
-            self._handle_success(task_id, output_paths)
-        else:
-            self._handle_failure(task_id, error)
+        # ---- DAG progression (THE MOST IMPORTANT PART) ----
+        try:
+            if success:
+                self._handle_success(task_id, output_paths)
+            else:
+                self._handle_failure(task_id, error)
+        except Exception:
+            logger.exception(
+                "SCHEDULER STATE TRANSITION FAILED | task_id=%s",
+                task_id,
+            )
+
 
             
     def evaluate_schedules(self, now: datetime):
@@ -400,14 +442,7 @@ class ScanScheduler:
                 self.metrics.inc("tasks_blocked_total")
                 self._block_descendants(child)
                 
-    def run(self):
-        logger.info("Scheduler loop started")
-        while True:
-            try:
-                self.tick()
-            except Exception:
-                logger.exception("Scheduler tick failed")
-            time.sleep(20000)
+    
     #dummy test
     def test_retry_exhaustion_blocks_children():
         # DAG: A -> B

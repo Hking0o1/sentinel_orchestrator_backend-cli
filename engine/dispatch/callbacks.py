@@ -1,39 +1,64 @@
-from engine.scheduler.scheduler import ScanScheduler
-from engine.scheduler.runtime import get_scheduler
 import logging
-import os
-
-logger = logging.getLogger(__name__)
-
-def init_scheduler(scheduler: ScanScheduler):
-    global _scheduler
-    _scheduler = scheduler
+from typing import Optional, Dict, Any
+from engine.scheduler.events import emit_scheduler_event
 
 
-def notify_task_success(task_id: str, output_paths: list[str] | None = None):
-        scheduler = get_scheduler()
-        scheduler.on_task_complete(
-            task_id=task_id,
-            success=True,
-            output_paths=output_paths,
-        )
-        logger.error(
-            "NOTIFY SUCCESS | task_id=%s | pid=%s",
-            task_id,
-            os.getpid()
-            )
-                
+logger = logging.getLogger("sentinel.dispatch.callbacks")
 
-def notify_task_failure(task_id: str, error: str):
-        scheduler = get_scheduler()
-        logger.error(
-            "CALLBACK FAILURE | task_id=%s | error=%s",
-            task_id,
-            error,
-        )
-        scheduler.on_task_complete(
-            task_id=task_id,
-            success=False,
-            error=error,
-        )
-    
+
+
+def notify_task_success(
+    *,
+    task_id: str,
+    scan_id: str,
+    output_paths: Dict[str, Any],
+    artifacts: Optional[list[str]] = None,
+) -> None:
+    """
+    Worker-safe success callback.
+    Emits event ONLY.
+    """
+
+    logger.info(
+        "TASK SUCCESS | task_id=%s | scan_id=%s | summary=%s",
+        task_id,
+        scan_id,
+        output_paths,
+    )
+
+    emit_scheduler_event(
+        event_type="TASK_COMPLETED",
+        task_id=task_id,
+        scan_id=scan_id,
+        details={
+            "output_paths": output_paths,
+        },
+    )
+
+
+def notify_task_failure(
+    *,
+    task_id: str,
+    scan_id: str,
+    error: str,
+) -> None:
+    """
+    Worker-safe failure callback.
+    Emits event ONLY.
+    """
+
+    logger.error(
+        "TASK FAILURE | task_id=%s | scan_id=%s | error=%s",
+        task_id,
+        scan_id,
+        error,
+    )
+
+    emit_scheduler_event(
+        event_type="TASK_FAILED",
+        task_id=task_id,
+        scan_id=scan_id,
+        details={
+            "error": error,
+        },
+    )

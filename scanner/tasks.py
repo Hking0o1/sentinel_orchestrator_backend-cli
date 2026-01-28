@@ -61,7 +61,12 @@ def run_tool_task(self, task_id: str, scan_id: str, task_type: str):
             output_paths.append(result["raw_report"])
 
         findings = result.get("findings", [])
-        findings_count = findings if isinstance(findings, int) else len(findings)
+        if isinstance(findings, int):
+            findings_count = findings
+        elif isinstance(findings, list):
+            findings_count = len(findings)
+        else:
+            findings_count = 0
 
         logger.info(
             "Tool finished | tool=%s | findings=%d | artifacts=%s",
@@ -76,10 +81,11 @@ def run_tool_task(self, task_id: str, scan_id: str, task_type: str):
 
     finally:
         if error:
-            notify_task_failure(task_id=task_id, error=error)
+            notify_task_failure(task_id=task_id ,scan_id=scan_id , error=error)
         else:
             notify_task_success(
                 task_id=task_id,
+                scan_id=scan_id,
                 output_paths=output_paths,
             )
 

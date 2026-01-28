@@ -7,7 +7,10 @@ celery_app = Celery(
     "scanner",
     broker=settings.REDIS_URL,
     backend=settings.REDIS_URL,
-    include=["scanner.tasks"],
+    include=[
+        "scanner.tasks",
+        "engine.scheduler.events",
+    ],
 )
 
 celery_app.conf.update(
