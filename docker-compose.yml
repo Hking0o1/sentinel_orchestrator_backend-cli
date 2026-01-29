@@ -74,9 +74,7 @@ services:
     networks:
       - sentinel_net
     command: >
-      sh -c "celery -A scanner.celery_app.celery_app beat 
-             --loglevel=info 
-             --schedule=/app/scan_results/celerybeat-schedule"
+      sh -c "celery -A scanner.celery_app.celery_app beat --loglevel=info --schedule=/app/scan_results/celerybeat-schedule"
     
   # --- 5. Redis Cache & Message Broker ---
   redis:

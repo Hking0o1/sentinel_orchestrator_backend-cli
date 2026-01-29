@@ -293,8 +293,8 @@ class ScanScheduler:
         MUST be idempotent and never crash.
         """
 
-        logger.info(
-            "ON_TASK_COMPLETE | task_id=%s | success=%s",
+        logger.warning(
+            "ON_TASK_COMPLETE CALLED | task_id=%s | success=%s",
             task_id,
             success,
         )

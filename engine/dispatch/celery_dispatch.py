@@ -8,12 +8,13 @@ Responsibilities:
 - Never schedule
 - Never inspect DAG
 """
-
+import logging
 from engine.scheduler.scheduler import ScanScheduler
 from engine.scheduler.dag import TaskDescriptor
-
 from scanner import tasks as scanner_tasks
-import logging
+from engine.scheduler.runtime import get_scheduler
+from engine.scheduler.events import drain_scheduler_events
+
 
 logger = logging.getLogger(__name__)
 
@@ -31,15 +32,60 @@ class CeleryDispatcher:
     # -------------------------
     # PUBLIC ENTRYPOINT
     # -------------------------
-
-    def run_once(self) -> int:
+    @staticmethod
+    def dispatch_scheduler_event(*, event, task_id, scan_id, details):
         """
-        Run one scheduler dispatch cycle.
-
-        Returns:
-            Number of tasks dispatched
+        Called inside BACKEND process
         """
+        scheduler = get_scheduler()
+
+        if event == "TASK_COMPLETED":
+            scheduler.on_task_complete(
+                task_id=task_id,
+                scan_id=scan_id,
+                success=True,
+                output_paths=details.get("output_paths"),
+            )
+
+        elif event == "TASK_FAILED":
+            scheduler.on_task_complete(
+                task_id=task_id,
+                scan_id=scan_id,
+                success=False,
+                error=details.get("error"),
+            )
+        
+    def run_once(self):
+        drained = 0
+
+        for evt in drain_scheduler_events():
+            drained += 1
+
+            logger.warning(
+                "DISPATCHER → SCHEDULER | event=%s | task_id=%s",
+                evt["event"],
+                evt["task_id"],
+            )
+
+            if evt["event"] == "TASK_COMPLETED":
+                self.scheduler.on_task_complete(
+                    task_id=evt["task_id"],
+                    success=True,
+                    output_paths=evt["details"].get("output_paths"),
+                )
+
+            elif evt["event"] == "TASK_FAILED":
+                self.scheduler.on_task_complete(
+                    task_id=evt["task_id"],
+                    success=False,
+                    error=evt["details"].get("error"),
+                )
+
+        if drained:
+            logger.warning("DISPATCHER | drained %d events", drained)
+
         return self.scheduler.schedule_once(self._dispatch_task)
+
 
     # -------------------------
     # INTERNAL DISPATCH LOGIC

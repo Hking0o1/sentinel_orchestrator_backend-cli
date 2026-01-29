@@ -27,7 +27,7 @@ def notify_task_success(
     )
 
     emit_scheduler_event(
-        event_type="TASK_COMPLETED",
+        event="TASK_COMPLETED",
         task_id=task_id,
         scan_id=scan_id,
         details={
@@ -55,7 +55,7 @@ def notify_task_failure(
     )
 
     emit_scheduler_event(
-        event_type="TASK_FAILED",
+        evente="TASK_FAILED",
         task_id=task_id,
         scan_id=scan_id,
         details={

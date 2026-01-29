@@ -10,20 +10,14 @@ from scanner.ai.provider import GeminiProvider
 from scanner.ai.exceptions import AISummarizationError
 from engine.dispatch.callbacks import notify_task_success, notify_task_failure
 from scanner.tools.registry import get_tool
-from scanner.result_adapter import adapt_tool_result
 from scanner.correlation.disk_correlator import correlate_from_disk
 from scanner.reporting.json_writer import write_json_report
 from scanner.reporting.pdf_writer import write_pdf_report
 from app.db.sync_session import get_sync_db
-from app.db.session import get_db_session
-from app.models.scan import Scan, ScanProfile
-from engine.scheduler.runtime import get_scheduler
+from app.models.scan import Scan
 from config.settings import settings
 from scanner.tools.adapter import ToolRunnerAdapter
-from engine.runtime.scan_context import ExecutionScanContext
 from engine.runtime.meta_loader import load_execution_context
-from engine.services.scan_submitter import ScanSubmitter
-from engine.services.schedule_loader import ScheduleLoader
 
 
 logger = logging.getLogger(__name__)
@@ -93,18 +87,23 @@ def run_tool_task(self, task_id: str, scan_id: str, task_type: str):
             db.close()
 
 
-
-
 @celery_app.task(
     name="scanner.tasks.dispatch_scheduled_scans",
     bind=True,
     autoretry_for=(),
 )
-def dispatch_scheduled_scans():
+def dispatch_scheduled_scans(self, *args, **kwargs):
     """
-    Periodic task (Celery Beat).
-    Pulls schedules from DB and submits scans.
+    Celery Beat entrypoint.
+    MUST accept self (bind=True) and extra args.
     """
+    logger.info("DISPATCH_SCHEDULED_SCANS CALLED BY BEAT")
+
+    from engine.scheduler.runtime import get_scheduler
+    from engine.services.scan_submitter import ScanSubmitter
+    from engine.services.schedule_loader import ScheduleLoader
+    from app.db.session import get_db_session
+
     scheduler = get_scheduler()
     submitter = ScanSubmitter(scheduler)
     loader = ScheduleLoader(submitter)
@@ -114,10 +113,7 @@ def dispatch_scheduled_scans():
             return await loader.dispatch_due_schedules(db)
 
     return asyncio.run(_run())
-
-
-    
-    
+   
 @celery_app.task(bind=True, autoretry_for=())
 def run_correlation_task(
     *,

@@ -16,59 +16,19 @@ from engine.dispatch.celery_dispatch import CeleryDispatcher
 logger = logging.getLogger(__name__)
 
 def start_scheduler_thread():
-    print(">>> start_scheduler_thread() CALLED")
-
     scheduler = get_scheduler()
-    print(">>> Scheduler instance obtained:", scheduler)
-
     dispatcher = CeleryDispatcher(scheduler)
-    print(">>> CeleryDispatcher created")
 
     def scheduler_loop():
-        print(">>> Sentinel scheduler loop started")
-        logger.info("Sentinel scheduler loop started")
-
         while True:
-            try:
-                events = drain_events()
-                for event in events:
-                    event_type = event["event"]
-                    task_id = event["task_id"]
-                    details = event.get("details", {})
-
-                    if event_type == "TASK_COMPLETED":
-                        scheduler.on_task_complete(
-                            task_id=task_id,
-                            success=True,
-                            output_paths=details.get("output_paths"),
-                        )
-
-                    elif event_type == "TASK_FAILED":
-                        scheduler.on_task_complete(
-                            task_id=task_id,
-                            success=False,
-                            error=details.get("error"),
-                        )
-
-                # 2️⃣ Dispatch ready tasks
-                dispatched = dispatcher.run_once()
-                if dispatched:
-                    print(f">>> Dispatched {dispatched} task(s)")
-
-            except Exception as exc:
-                print(">>> Scheduler loop exception:", exc)
-                logger.exception("Scheduler dispatch loop error")
-
+            dispatcher.run_once()
             time.sleep(0.5)
 
-    thread = threading.Thread(
+    threading.Thread(
         target=scheduler_loop,
         daemon=True,
         name="sentinel-scheduler-loop",
-    )
-
-    thread.start()
-    print(">>> Scheduler thread started:", thread)
+    ).start()
 
 
 

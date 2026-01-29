@@ -1,44 +1,35 @@
 from __future__ import annotations
 import logging
-from typing import Dict, Any
+from collections import deque
 from engine.scheduler.types import SchedulerEventType
-from engine.scheduler.event_bus import publish_event
-from engine.scheduler.runtime import get_scheduler
+from typing import Dict, Iterator
 
-logger = logging.getLogger("sentinel.scheduler.events")
+logger = logging.getLogger(__name__)
 
+_EVENT_QUEUE = deque()
 
-def emit_scheduler_event(*, event: str, task_id: str, scan_id: str, details: dict):
+def emit_scheduler_event(*, event: str, task_id: str, scan_id: str, details: dict | None = None):
+    payload = {
+        "event": event,
+        "task_id": task_id,
+        "scan_id": scan_id,
+        "details": details or {},
+    }
+    _EVENT_QUEUE.append(payload)
+
     logger.info(
-        "SCHEDULER_EVENT %s",
-        {
-            "event": event,
-            "task_id": task_id,
-            "scan_id": scan_id,
-            "details": details,
-        },
+        "SCHEDULER_EVENT_EMIT | event=%s | task_id=%s | scan_id=%s",
+        event,
+        task_id,
+        scan_id,
     )
 
-    scheduler = get_scheduler()
 
-    if event == "TASK_COMPLETED":
-        scheduler.on_task_complete(
-            task_id=task_id,
-            success=True,
-            output_paths=details.get("output_paths"),
-        )
-
-    elif event == "TASK_FAILED":
-        scheduler.on_task_complete(
-            task_id=task_id,
-            success=False,
-            error=details.get("error"),
-        )
+def drain_scheduler_events() -> Iterator[Dict]:
+    while _EVENT_QUEUE:
+        yield _EVENT_QUEUE.popleft()
 
 
-# -----------------------------
-# Convenience wrappers
-# -----------------------------
 
 def task_admitted(task_id: str, scan_id: str) -> None:
     emit_scheduler_event(
