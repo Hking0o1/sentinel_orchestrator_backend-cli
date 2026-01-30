@@ -293,8 +293,8 @@ class ScanScheduler:
         MUST be idempotent and never crash.
         """
 
-        logger.warning(
-            "ON_TASK_COMPLETE CALLED | task_id=%s | success=%s",
+        logger.critical(
+            "🔥🔥🔥 ON_TASK_COMPLETE CALLED | task_id=%s | success=%s",
             task_id,
             success,
         )
@@ -343,6 +343,7 @@ class ScanScheduler:
         try:
             if success:
                 self._handle_success(task_id, output_paths)
+                
             else:
                 self._handle_failure(task_id, error)
         except Exception:

@@ -18,11 +18,21 @@ logger = logging.getLogger(__name__)
 def start_scheduler_thread():
     scheduler = get_scheduler()
     dispatcher = CeleryDispatcher(scheduler)
-
+    
+    
     def scheduler_loop():
+        logger.error("SENTINEL SCHEDULER LOOP STARTED")
+
         while True:
-            dispatcher.run_once()
+            try:
+                dispatched = dispatcher.run_once()
+                if dispatched:
+                    logger.error("DISPATCHED %d TASK(S)", dispatched)
+            except Exception:
+                logger.exception("Scheduler loop error")
+
             time.sleep(0.5)
+
 
     threading.Thread(
         target=scheduler_loop,

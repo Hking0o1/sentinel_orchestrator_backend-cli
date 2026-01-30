@@ -87,6 +87,22 @@ def run_tool_task(self, task_id: str, scan_id: str, task_type: str):
             db.close()
 
 
+@celery_app.task
+def on_task_success(result, task_id):
+    from engine.scheduler.runtime import get_scheduler
+    scheduler = get_scheduler()
+    scheduler.on_task_complete(task_id=task_id, success=True)
+
+@celery_app.task
+def on_task_failure(request, exc, traceback, task_id):
+    from engine.scheduler.runtime import get_scheduler
+    scheduler = get_scheduler()
+    scheduler.on_task_complete(
+        task_id=task_id,
+        success=False,
+        error=str(exc),
+    )
+
 @celery_app.task(
     name="scanner.tasks.dispatch_scheduled_scans",
     bind=True,

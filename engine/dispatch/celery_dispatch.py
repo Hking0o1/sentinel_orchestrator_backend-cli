@@ -56,35 +56,24 @@ class CeleryDispatcher:
             )
         
     def run_once(self):
-        drained = 0
+        """
+        One scheduler tick:
+        - apply worker completion events
+        - dispatch new runnable tasks
+        """
+        from engine.scheduler.events import drain_scheduler_events
 
-        for evt in drain_scheduler_events():
-            drained += 1
-
-            logger.warning(
-                "DISPATCHER → SCHEDULER | event=%s | task_id=%s",
-                evt["event"],
-                evt["task_id"],
+        completed = drain_scheduler_events(self.scheduler)
+        if completed:
+            logger.info("Applied %d scheduler events", completed)
+        else:
+            logger.error(
+                "SCHEDULER EVENTS APPLIED | count=%d",
+                completed,
             )
 
-            if evt["event"] == "TASK_COMPLETED":
-                self.scheduler.on_task_complete(
-                    task_id=evt["task_id"],
-                    success=True,
-                    output_paths=evt["details"].get("output_paths"),
-                )
-
-            elif evt["event"] == "TASK_FAILED":
-                self.scheduler.on_task_complete(
-                    task_id=evt["task_id"],
-                    success=False,
-                    error=evt["details"].get("error"),
-                )
-
-        if drained:
-            logger.warning("DISPATCHER | drained %d events", drained)
-
         return self.scheduler.schedule_once(self._dispatch_task)
+
 
 
     # -------------------------
@@ -97,7 +86,7 @@ class CeleryDispatcher:
 
         This method must remain dumb and explicit.
         """
-
+        from scanner.tasks import on_task_success, on_task_failure
         task_type = task.task_type
 
         # ---- TOOL TASKS (generic) ----
@@ -119,10 +108,10 @@ class CeleryDispatcher:
                 task_id,
                 task_type,
             )
-            scanner_tasks.run_tool_task.delay(
-                task_id=task.task_id,
-                scan_id=task.scan_id,
-                task_type=task.task_type,
+            scanner_tasks.run_tool_task.apply_async(
+                args=[task_id, task.scan_id, task_type],
+                link=on_task_success.s(task_id),
+                link_error=on_task_failure.s(task_id),
             )
 
         # ---- POST-PROCESS TASKS ----

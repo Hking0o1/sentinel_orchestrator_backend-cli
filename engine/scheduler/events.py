@@ -3,6 +3,7 @@ import logging
 from collections import deque
 from engine.scheduler.types import SchedulerEventType
 from typing import Dict, Iterator
+from .event_bus import drain_events
 
 logger = logging.getLogger(__name__)
 
@@ -24,10 +25,35 @@ def emit_scheduler_event(*, event: str, task_id: str, scan_id: str, details: dic
         scan_id,
     )
 
+def drain_scheduler_events(scheduler):
+    """
+    Drain all scheduler events and apply them to scheduler state.
+    """
+    events = drain_events()
+    count = 0
 
-def drain_scheduler_events() -> Iterator[Dict]:
-    while _EVENT_QUEUE:
-        yield _EVENT_QUEUE.popleft()
+    for event in events:
+        evt_type = event.get("event")
+        task_id = event.get("task_id")
+
+        if evt_type == "TASK_COMPLETED":
+            scheduler.on_task_complete(
+                task_id=task_id,
+                success=True,
+                output_paths=event.get("details", {}).get("output_paths"),
+            )
+            count += 1
+
+        elif evt_type == "TASK_FAILED":
+            scheduler.on_task_complete(
+                task_id=task_id,
+                success=False,
+                error=event.get("details", {}).get("error"),
+            )
+            count += 1
+
+    return count
+
 
 
 
