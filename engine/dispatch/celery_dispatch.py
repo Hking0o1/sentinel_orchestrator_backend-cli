@@ -12,12 +12,10 @@ import logging
 from engine.scheduler.scheduler import ScanScheduler
 from engine.scheduler.dag import TaskDescriptor
 from scanner import tasks as scanner_tasks
-from engine.scheduler.runtime import get_scheduler
 from engine.scheduler.events import drain_scheduler_events
 
 
 logger = logging.getLogger(__name__)
-
 class CeleryDispatcher:
     """
     Stateless dispatcher.
@@ -32,48 +30,14 @@ class CeleryDispatcher:
     # -------------------------
     # PUBLIC ENTRYPOINT
     # -------------------------
-    @staticmethod
-    def dispatch_scheduler_event(*, event, task_id, scan_id, details):
-        """
-        Called inside BACKEND process
-        """
-        scheduler = get_scheduler()
 
-        if event == "TASK_COMPLETED":
-            scheduler.on_task_complete(
-                task_id=task_id,
-                scan_id=scan_id,
-                success=True,
-                output_paths=details.get("output_paths"),
-            )
-
-        elif event == "TASK_FAILED":
-            scheduler.on_task_complete(
-                task_id=task_id,
-                scan_id=scan_id,
-                success=False,
-                error=details.get("error"),
-            )
-        
     def run_once(self):
-        """
-        One scheduler tick:
-        - apply worker completion events
-        - dispatch new runnable tasks
-        """
-        from engine.scheduler.events import drain_scheduler_events
+        applied = drain_scheduler_events(self.scheduler)
 
-        completed = drain_scheduler_events(self.scheduler)
-        if completed:
-            logger.info("Applied %d scheduler events", completed)
-        else:
-            logger.error(
-                "SCHEDULER EVENTS APPLIED | count=%d",
-                completed,
-            )
+        if applied:
+            logger.error("SCHEDULER EVENTS APPLIED | count=%d", applied)
 
         return self.scheduler.schedule_once(self._dispatch_task)
-
 
 
     # -------------------------

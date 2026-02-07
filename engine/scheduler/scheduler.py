@@ -56,7 +56,7 @@ class ScanScheduler:
         self._dags = {}
         self._dag_states = {}
         self.queue = SchedulerQueue()
-        self.resources = ResourceBudget(settings.SCHEDULER_MAX_TOKENS)
+        self.resources = resource_budget
         self.in_flight = InFlightRegistry()
         self.metrics = metrics
 
@@ -215,9 +215,10 @@ class ScanScheduler:
             responsible for execution (Celery later)
         """
         logger.error(
-            "SCHEDULER TICK ENTER | ready=%d | inflight=%d",
+            "SCHEDULER TICK ENTER | ready=%d | inflight=%d | pid=%d",
             len(self.queue),
             len(self._in_flight),
+            os.getpid(),
         )
 
         self._state_snapshot("TICK START")

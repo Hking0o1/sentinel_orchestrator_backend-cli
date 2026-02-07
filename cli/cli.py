@@ -42,12 +42,12 @@ def print_header():
 # Helpers
 # -----------------------------
 def print_error(message, details=None):
-    console.print(f"[bold red]❌ Error:[/bold red] {message}")
+    console.print(f"[bold red] Error:[/bold red] {message}")
     if details:
         console.print(Panel(str(details), title="Details", border_style="red"))
 
 def print_success(message):
-    console.print(f"[bold green]✅ Success:[/bold green] {message}")
+    console.print(f"[bold green] Success:[/bold green] {message}")
 
 def get_auth_token(username, password):
     token_url = f"{BACKEND_API_URL}/api/v1/auth/token"

@@ -18,7 +18,7 @@ from app.models.scan import Scan
 from config.settings import settings
 from scanner.tools.adapter import ToolRunnerAdapter
 from engine.runtime.meta_loader import load_execution_context
-
+from engine.dispatch.scheduler_callbacks import scheduler_task_completed
 
 logger = logging.getLogger(__name__)
 __all__ = ["celery_app"]
@@ -74,30 +74,33 @@ def run_tool_task(self, task_id: str, scan_id: str, task_type: str):
         logger.exception("Tool execution failed")
 
     finally:
-        if error:
-            notify_task_failure(task_id=task_id ,scan_id=scan_id , error=error)
-        else:
-            notify_task_success(
-                task_id=task_id,
-                scan_id=scan_id,
-                output_paths=output_paths,
-            )
-
+        scheduler_task_completed.delay(
+            task_id=task_id,
+            success=error is None,
+            output_paths=output_paths,
+            error=error,
+        )
+        
+        return {
+            "output_paths": output_paths,
+            "success": error is None,
+        }
         if db:
             db.close()
 
 
 @celery_app.task
 def on_task_success(result, task_id):
-    from engine.scheduler.runtime import get_scheduler
-    scheduler = get_scheduler()
-    scheduler.on_task_complete(task_id=task_id, success=True)
+    output_paths = result.get("output_paths")
+    scheduler_task_completed.delay(
+        task_id=task_id,
+        success=True,
+        output_paths=output_paths,
+    )
 
 @celery_app.task
-def on_task_failure(request, exc, traceback, task_id):
-    from engine.scheduler.runtime import get_scheduler
-    scheduler = get_scheduler()
-    scheduler.on_task_complete(
+def on_task_failure(task_id, exc):
+    scheduler_task_completed.delay(
         task_id=task_id,
         success=False,
         error=str(exc),
