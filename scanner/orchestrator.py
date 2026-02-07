@@ -35,7 +35,7 @@ from reportlab.lib.units import inch
 from reportlab.lib.colors import HexColor
 # --- Import Correlation & Data Pipeline ---
 from scanner.correlation.engine import CorrelationEngine
-from app.services.data_pipeline import data_sanitizer
+from app.services.data_pipeline import DataSanitizer
 
 from langgraph.graph import StateGraph, END
 from config.settings import settings
@@ -488,7 +488,7 @@ def run_orchestration(job_id: str, profile: str, target_url: Optional[str], sour
         findings_to_save = final_state.get('findings', [])
         if findings_to_save:
             thread = threading.Thread(
-                target=data_sanitizer.process_and_save, 
+                target=DataSanitizer.process_and_save(findings=findings_to_save), 
                 args=(findings_to_save,),
                 daemon=True
             )
