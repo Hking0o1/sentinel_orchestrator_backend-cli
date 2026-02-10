@@ -1,5 +1,9 @@
-from typing import List, Dict
+from typing import List, Dict, Any
 import time
+import requests
+import google.generativeai as genai
+
+from config.settings import settings
 
 from scanner.ai.exceptions import (
     AITokenLimitError,
@@ -23,9 +27,13 @@ class GeminiProvider(AIProvider):
     Concrete Gemini implementation.
     """
 
-    def __init__(self, client, timeout_sec: int = 30):
-        self.client = client
+    def __init__(self, model_name: str = "gemini-2.5-flash", timeout_sec: int = 30):
+        self.model_name = model_name
         self.timeout_sec = timeout_sec
+        if not settings.GEMINI_API_KEY:
+            raise AIProviderError("GEMINI_API_KEY is not configured")
+        genai.configure(api_key=settings.GEMINI_API_KEY)
+        self.client = genai.GenerativeModel(self.model_name)
 
     def summarize(self, findings: List[Dict]) -> str:
         if not findings:
@@ -35,18 +43,15 @@ class GeminiProvider(AIProvider):
 
         try:
             start = time.time()
-            response = self.client.generate(
-                prompt=prompt,
-                timeout=self.timeout_sec,
-            )
+            response = self.client.generate_content(prompt)
 
             if time.time() - start > self.timeout_sec:
                 raise AITimeoutError("Gemini request timed out")
 
-            if response.token_usage_exceeded:
-                raise AITokenLimitError("Gemini token limit exceeded")
-
-            return response.text
+            text = getattr(response, "text", None)
+            if not text:
+                raise AIProviderError("Gemini returned empty response")
+            return text
 
         except AITokenLimitError:
             raise
@@ -67,3 +72,84 @@ class GeminiProvider(AIProvider):
             "for an engineering report:\n\n"
             + "\n".join(lines)
         )
+
+
+class OllamaProvider(AIProvider):
+    """
+    Ollama-backed local LLM provider.
+    """
+
+    def __init__(
+        self,
+        base_url: str = "http://host.docker.internal:11434",
+        model: str = "gemma:2b",
+        timeout_sec: int = 60,
+    ):
+        self.base_url = base_url.rstrip("/")
+        self.model = model
+        self.timeout_sec = timeout_sec
+
+    def summarize(self, findings: List[Dict]) -> str:
+        if not findings:
+            raise AIInputValidationError("Empty findings chunk")
+
+        prompt = self._build_prompt(findings)
+        payload = {
+            "model": self.model,
+            "prompt": prompt,
+            "stream": False,
+        }
+
+        try:
+            resp = requests.post(
+                f"{self.base_url}/api/generate",
+                json=payload,
+                timeout=self.timeout_sec,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            text = data.get("response", "").strip()
+            if not text:
+                raise AIProviderError("Ollama returned empty response")
+            return text
+        except requests.Timeout as exc:
+            raise AITimeoutError("Ollama request timed out") from exc
+        except requests.HTTPError as exc:
+            raise AIProviderError(f"Ollama HTTP error: {exc}") from exc
+        except Exception as exc:
+            raise AIProviderError(str(exc)) from exc
+
+    def _build_prompt(self, findings: List[Dict]) -> str:
+        lines = []
+        for f in findings:
+            title = f.get("title", "Unnamed issue")
+            severity = f.get("severity", "UNKNOWN")
+            desc = (f.get("description") or f.get("details") or "").strip()
+            if desc:
+                lines.append(f"- [{severity}] {title}: {desc[:180]}")
+            else:
+                lines.append(f"- [{severity}] {title}")
+
+        return (
+            "You are a senior application security engineer. "
+            "Produce a concise technical summary and prioritized remediation plan.\n\n"
+            "Findings:\n"
+            + "\n".join(lines)
+        )
+
+
+def build_provider(provider_config: Dict[str, Any] | None = None) -> AIProvider:
+    cfg = provider_config or {}
+    provider_name = str(cfg.get("provider", settings.AI_PROVIDER)).lower()
+
+    if provider_name == "gemini":
+        return GeminiProvider(
+            model_name=str(cfg.get("model", "gemini-2.5-flash")),
+            timeout_sec=int(cfg.get("timeout_sec", settings.AI_TIMEOUT_SEC)),
+        )
+
+    return OllamaProvider(
+        base_url=str(cfg.get("base_url", settings.OLLAMA_BASE_URL)),
+        model=str(cfg.get("model", settings.OLLAMA_MODEL)),
+        timeout_sec=int(cfg.get("timeout_sec", settings.AI_TIMEOUT_SEC)),
+    )

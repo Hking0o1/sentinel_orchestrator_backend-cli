@@ -7,6 +7,8 @@ This module owns the singleton ScanScheduler instance.
 from typing import Optional
 import time
 import logging
+import atexit
+import os
 from .scheduler import ScanScheduler
 from .resources import ResourceBudget
 from .metrics import SchedulerMetrics
@@ -18,9 +20,57 @@ from engine.scheduler.types import SchedulerEventType
 logger = logging.getLogger(__name__)
 
 _scheduler_thread = None
+_scheduler_lock_fd = None
 
 # Internal singleton
 _SCHEDULER: Optional[ScanScheduler] = None
+
+
+def _release_scheduler_process_lock() -> None:
+    global _scheduler_lock_fd
+    if _scheduler_lock_fd is None:
+        return
+    try:
+        _scheduler_lock_fd.close()
+    except Exception:
+        logger.exception("Failed to close scheduler process lock file")
+    finally:
+        _scheduler_lock_fd = None
+
+
+def acquire_scheduler_process_lock(
+    lock_path: str = "/tmp/sentinel_scheduler.lock",
+) -> bool:
+    """
+    Acquire a process-wide lock to ensure only one process owns scheduler startup.
+
+    Returns:
+        True if this process owns the scheduler lock, False otherwise.
+    """
+    global _scheduler_lock_fd
+
+    if _scheduler_lock_fd is not None:
+        return True
+
+    lock_dir = os.path.dirname(lock_path)
+    if lock_dir:
+        os.makedirs(lock_dir, exist_ok=True)
+
+    lock_fd = open(lock_path, "a+")
+    try:
+        import fcntl  # Unix-only; backend container runs Linux.
+
+        fcntl.flock(lock_fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        lock_fd.close()
+        return False
+    except Exception:
+        lock_fd.close()
+        raise
+
+    _scheduler_lock_fd = lock_fd
+    atexit.register(_release_scheduler_process_lock)
+    return True
 
 
 def init_scheduler(

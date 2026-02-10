@@ -1,6 +1,7 @@
 import threading
 import time
 import logging
+import os
 from fastapi import FastAPI
 from contextlib import asynccontextmanager
 from app.api import api_router
@@ -9,13 +10,30 @@ from app.db.session import engine, AsyncSessionLocal
 from app.db.base import Base
 from app.db import crud
 from app.models.user import UserCreate
-from engine.scheduler.runtime import init_scheduler, get_scheduler
+from engine.scheduler.runtime import (
+    acquire_scheduler_process_lock,
+    init_scheduler,
+    get_scheduler,
+)
 from engine.scheduler.event_bus import drain_events
 from engine.dispatch.celery_dispatch import CeleryDispatcher
 
 logger = logging.getLogger(__name__)
+_scheduler_thread_started = False
+_scheduler_thread_lock = threading.Lock()
 
 def start_scheduler_thread():
+    global _scheduler_thread_started
+
+    with _scheduler_thread_lock:
+        if _scheduler_thread_started:
+            logger.warning(
+                "Scheduler thread already started in this process | pid=%s",
+                os.getpid(),
+            )
+            return
+        _scheduler_thread_started = True
+
     scheduler = get_scheduler()
     dispatcher = CeleryDispatcher(scheduler)
     
@@ -90,16 +108,31 @@ async def lifespan(app: FastAPI):
     # -------------------------------------------------
     # 3. Initialize Sentinel scheduler (CRITICAL)
     # -------------------------------------------------
-    print("Initializing Sentinel scheduler...")
+    logger.info("Initializing Sentinel scheduler...")
 
-    init_scheduler(
-        max_tokens=settings.SCHEDULER_MAX_TOKENS,
-        max_concurrent_tasks=settings.SCHEDULER_MAX_CONCURRENT_TASKS,
-    )
+    if acquire_scheduler_process_lock():
+        try:
+            init_scheduler(
+                max_tokens=settings.SCHEDULER_MAX_TOKENS,
+                max_concurrent_tasks=settings.SCHEDULER_MAX_CONCURRENT_TASKS,
+            )
+            start_scheduler_thread()
+            logger.info(
+                "Sentinel scheduler initialized successfully | pid=%s",
+                os.getpid(),
+            )
+        except RuntimeError as exc:
+            logger.warning(
+                "Scheduler initialization skipped in pid=%s: %s",
+                os.getpid(),
+                exc,
+            )
+    else:
+        logger.warning(
+            "Scheduler startup skipped: lock is held by another process | pid=%s",
+            os.getpid(),
+        )
 
-    start_scheduler_thread()
-
-    print("Sentinel scheduler initialized successfully.")
     print("Startup complete.")
 
     yield

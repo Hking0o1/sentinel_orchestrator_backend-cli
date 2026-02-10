@@ -1,12 +1,14 @@
 from scanner.celery_app import celery_app
 import os
 import logging
+import json
 from pathlib import Path
 import asyncio
 from scanner.ai.chunker import chunk_findings_jsonl
 from scanner.ai.state import load_progress, save_progress
 from scanner.ai.summarizer import summarize_chunk
-from scanner.ai.provider import GeminiProvider
+from scanner.ai.provider import build_provider
+from scanner.ai.attack_path import generate_attack_path_analysis
 from scanner.ai.exceptions import AISummarizationError
 from engine.dispatch.callbacks import notify_task_success, notify_task_failure
 from scanner.tools.registry import get_tool
@@ -51,10 +53,30 @@ def run_tool_task(self, task_id: str, scan_id: str, task_type: str):
             output_dir=str(output_dir),
         )
 
-        if result.get("raw_report"):
-            output_paths.append(result["raw_report"])
-
         findings = result.get("findings", [])
+
+        # Persist findings as JSONL so downstream CORRELATION has stable file inputs.
+        findings_path = output_dir / "findings.jsonl"
+        with open(findings_path, "w", encoding="utf-8") as findings_file:
+            if isinstance(findings, list):
+                for finding in findings:
+                    findings_file.write(json.dumps(finding, ensure_ascii=False))
+                    findings_file.write("\n")
+
+        output_paths.append(str(findings_path))
+
+        # Optionally include raw report only when it is a real file path.
+        raw_report = result.get("raw_report")
+        if isinstance(raw_report, str) and os.path.exists(raw_report):
+            output_paths.append(raw_report)
+        elif (
+            isinstance(raw_report, tuple)
+            and len(raw_report) >= 2
+            and isinstance(raw_report[1], str)
+            and os.path.exists(raw_report[1])
+        ):
+            output_paths.append(raw_report[1])
+
         if isinstance(findings, int):
             findings_count = findings
         elif isinstance(findings, list):
@@ -80,13 +102,13 @@ def run_tool_task(self, task_id: str, scan_id: str, task_type: str):
             output_paths=output_paths,
             error=error,
         )
-        
-        return {
-            "output_paths": output_paths,
-            "success": error is None,
-        }
         if db:
             db.close()
+
+    return {
+        "output_paths": output_paths,
+        "success": error is None,
+    }
 
 
 @celery_app.task
@@ -135,6 +157,7 @@ def dispatch_scheduled_scans(self, *args, **kwargs):
    
 @celery_app.task(bind=True, autoretry_for=())
 def run_correlation_task(
+    self,
     *,
     task_id: str,
     scan_id: str,
@@ -186,7 +209,8 @@ def run_ai_summary_task(
     findings_path: str,
     output_path: str,
     progress_path: str,
-    provider_config: dict,
+    provider_config: dict | None = None,
+    attack_path_path: str | None = None,
     max_items_per_chunk: int = 20,
 ):
     """
@@ -198,8 +222,15 @@ def run_ai_summary_task(
     """
 
     try:
-        provider = GeminiProvider(**provider_config)
+        provider = build_provider(provider_config)
         last_done = load_progress(progress_path)
+        attack_path_context = ""
+        if attack_path_path and os.path.exists(attack_path_path):
+            try:
+                with open(attack_path_path, "r", encoding="utf-8") as ap:
+                    attack_path_context = ap.read().strip()
+            except Exception:
+                logger.exception("Failed to read attack path context")
 
         with open(output_path, "a", encoding="utf-8") as out:
             for idx, chunk in enumerate(
@@ -212,9 +243,18 @@ def run_ai_summary_task(
                     continue
 
                 try:
+                    chunk_input = list(chunk)
+                    if attack_path_context:
+                        chunk_input.append(
+                            {
+                                "title": "Attack Path Analysis Context",
+                                "severity": "INFO",
+                                "description": attack_path_context[:4000],
+                            }
+                        )
                     summary = summarize_chunk(
                         provider=provider,
-                        findings=chunk,
+                        findings=chunk_input,
                     )
                     out.write(summary + "\n\n")
                     save_progress(progress_path, idx + 1)
@@ -236,6 +276,36 @@ def run_ai_summary_task(
             findings_path=output_path,
         )
 
+    except Exception as exc:
+        notify_task_failure(task_id=task_id, error=str(exc))
+
+
+@celery_app.task(bind=True, autoretry_for=())
+def run_attack_path_task(
+    self,
+    task_id: str,
+    scan_id: str,
+    findings_path: str,
+    output_path: str,
+    target_url: str | None = None,
+):
+    try:
+        attack_path = generate_attack_path_analysis(
+            findings_path=findings_path,
+            output_path=output_path,
+            target_url=target_url,
+            ollama_base_url=settings.OLLAMA_BASE_URL,
+            ollama_model=settings.OLLAMA_MODEL,
+            timeout_sec=settings.AI_TIMEOUT_SEC,
+        )
+        notify_task_success(
+            task_id=task_id,
+            output_summary={
+                "task_type": "ATTACK_PATH",
+                "artifact_count": 1,
+            },
+            findings_path=attack_path,
+        )
     except Exception as exc:
         notify_task_failure(task_id=task_id, error=str(exc))
 

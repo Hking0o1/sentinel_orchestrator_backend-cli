@@ -1,0 +1,151 @@
+import json
+from pathlib import Path
+from typing import Any
+
+import requests
+
+
+LEAK_KEYWORDS = {
+    "api key",
+    "secret",
+    "token",
+    "credential",
+    "password",
+    "private key",
+    "exposed",
+    "leak",
+}
+
+CRAWLER_SURFACES = {
+    "/admin",
+    "/internal",
+    "/debug",
+    "/.git",
+    "/backup",
+    "/swagger",
+    "/graphql",
+    "/api",
+}
+
+
+def generate_attack_path_analysis(
+    *,
+    findings_path: str,
+    output_path: str,
+    target_url: str | None,
+    ollama_base_url: str,
+    ollama_model: str,
+    timeout_sec: int,
+) -> str:
+    findings = _read_findings(findings_path)
+    context = _build_context(findings, target_url)
+
+    ai_text = _query_ollama(
+        context=context,
+        base_url=ollama_base_url,
+        model=ollama_model,
+        timeout_sec=timeout_sec,
+    )
+
+    if not ai_text:
+        ai_text = _fallback_analysis(context)
+
+    out = Path(output_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(ai_text, encoding="utf-8")
+    return str(out)
+
+
+def _read_findings(path: str) -> list[dict[str, Any]]:
+    findings: list[dict[str, Any]] = []
+    p = Path(path)
+    if not p.exists():
+        return findings
+
+    with p.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                item = json.loads(line)
+                if isinstance(item, dict):
+                    findings.append(item)
+            except Exception:
+                continue
+    return findings
+
+
+def _build_context(findings: list[dict[str, Any]], target_url: str | None) -> dict[str, Any]:
+    high_sev = [f for f in findings if str(f.get("severity", "")).upper() in {"CRITICAL", "HIGH"}]
+
+    text_blob = " ".join(
+        f"{f.get('title','')} {f.get('description','')} {f.get('tool_source','')} {f.get('tool','')} {f.get('endpoint_location',{})}"
+        for f in findings[:200]
+    ).lower()
+
+    leak_signals = sorted(k for k in LEAK_KEYWORDS if k in text_blob)
+    crawler_signals = sorted(s for s in CRAWLER_SURFACES if s in text_blob or (target_url and s in target_url.lower()))
+
+    return {
+        "target_url": target_url,
+        "total_findings": len(findings),
+        "high_severity_count": len(high_sev),
+        "leak_signals": leak_signals,
+        "crawler_surface_signals": crawler_signals,
+        "top_findings": [
+            {
+                "severity": f.get("severity"),
+                "title": f.get("title"),
+                "description": (f.get("description") or "")[:300],
+            }
+            for f in (high_sev[:12] if high_sev else findings[:12])
+        ],
+    }
+
+
+def _query_ollama(*, context: dict[str, Any], base_url: str, model: str, timeout_sec: int) -> str | None:
+    prompt = (
+        "You are a senior penetration tester. Analyze the context and produce:\n"
+        "1) AI-Crawler Leak Risk Score (0-10)\n"
+        "2) 2-3 plausible step-by-step attack paths\n"
+        "3) likely data leak vectors tied to crawler discovery\n"
+        "4) concrete mitigations.\n\n"
+        f"Context:\n{json.dumps(context, indent=2)}"
+    )
+
+    payload = {"model": model, "prompt": prompt, "stream": False}
+
+    try:
+        resp = requests.post(
+            f"{base_url.rstrip('/')}/api/generate",
+            json=payload,
+            timeout=timeout_sec,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        text = (data.get("response") or "").strip()
+        return text or None
+    except Exception:
+        return None
+
+
+def _fallback_analysis(context: dict[str, Any]) -> str:
+    score = min(10, max(1, len(context["leak_signals"]) + len(context["crawler_surface_signals"])))
+    return (
+        "AI Attack Path Analysis (Fallback)\n\n"
+        f"AI-Crawler Leak Risk Score: {score}/10\n"
+        f"Target: {context.get('target_url')}\n"
+        f"Total Findings: {context.get('total_findings')}\n"
+        f"High/Critical Findings: {context.get('high_severity_count')}\n\n"
+        f"Leak Signals: {', '.join(context.get('leak_signals') or ['none'])}\n"
+        f"Crawler Surface Signals: {', '.join(context.get('crawler_surface_signals') or ['none'])}\n\n"
+        "Suggested Attack Path:\n"
+        "1. Crawl discoverable endpoints and metadata exposures.\n"
+        "2. Correlate leaked tokens/secrets with high-risk endpoints.\n"
+        "3. Use leaked context to escalate access and exfiltrate sensitive data.\n\n"
+        "Mitigations:\n"
+        "- Restrict crawler-exposed sensitive routes and debug assets.\n"
+        "- Rotate and vault secrets; block secrets in responses/logs.\n"
+        "- Add robots, authz checks, WAF rules, and anomaly monitoring.\n"
+    )

@@ -114,6 +114,25 @@ class ScanSubmitter:
 
             targets["target_url"] = target_url
 
+        elif profile == "FULL":
+            target_url = (
+                incoming_targets.get("target_url")
+                or scan_request.get("target_url")
+            )
+            src_path = (
+                incoming_targets.get("source_code_path")
+                or scan_request.get("source_code_path")
+                or scan_request.get("src_path")
+            )
+
+            if not target_url:
+                raise ValueError("full scan requires target_url")
+            if not src_path:
+                raise ValueError("full scan requires source path")
+
+            targets["target_url"] = target_url
+            targets["source_code_path"] = src_path
+
         else:
             src_path = (
                 incoming_targets.get("source_code_path")

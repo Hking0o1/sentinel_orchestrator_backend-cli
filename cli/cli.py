@@ -1,55 +1,61 @@
 import argparse
-import requests
 import json
-import sys
 import os
-from typing import Optional
+import sys
+from pathlib import Path
 
+import requests
 from rich.console import Console
-from rich.table import Table
 from rich.panel import Panel
-from rich.text import Text
+from rich.table import Table
 
-# -----------------------------
-# Engine imports (NEW)
-# -----------------------------
-from engine.services.scan_submitter import ScanSubmitter, ScanSubmissionError
-from engine.scheduler.runtime import init_scheduler, get_scheduler
-from config.settings import settings
 
-# -----------------------------
-# Configuration
-# -----------------------------
+def _bootstrap_project_path() -> None:
+    """
+    Ensure repository root is importable when running:
+    `python cli/cli.py ...` or `python -m cli.cli ...`
+    """
+    repo_root = Path(__file__).resolve().parent.parent
+    root_str = str(repo_root)
+    if root_str not in sys.path:
+        sys.path.insert(0, root_str)
+
+
+_bootstrap_project_path()
+
+
 BACKEND_API_URL = os.environ.get("SENTINEL_API_URL", "http://localhost:80")
 console = Console()
 
-# -----------------------------
-# ASCII Art Poster (UNCHANGED)
-# -----------------------------
-def print_header():
-    title = r"""
-███████╗███████╗███╗   ██╗████████╗██╗███╗   ██╗███████╗██╗
-██╔════╝██╔════╝████╗  ██║╚══██╔══╝██║████╗  ██║██╔════╝██║
-███████╗█████╗  ██╔██╗ ██║   ██║   ██║██╔██╗ ██║█████╗  ██║
-╚════██║██╔══╝  ██║╚██╗██║   ██║   ██║██║╚██╗██║██╔══╝  ╚═╝
-███████║███████╗██║ ╚████║   ██║   ██║██║ ╚████║███████╗██╗
-╚══════╝╚══════╝╚═╝  ╚═══╝   ╚═╝   ╚═╝╚═╝  ╚═══╝╚══════╝╚═╝
-           ... DevSecOps Orchestration Engine ...
-    """
-    console.print(Panel.fit(Text(title, style="bold cyan"), border_style="blue"))
 
-# -----------------------------
-# Helpers
-# -----------------------------
-def print_error(message, details=None):
-    console.print(f"[bold red] Error:[/bold red] {message}")
-    if details:
-        console.print(Panel(str(details), title="Details", border_style="red"))
+def print_header() -> None:
+    try:
+        console.print(Panel.fit("Sentinel CLI", border_style="blue"))
+    except UnicodeEncodeError:
+        print("Sentinel CLI")
 
-def print_success(message):
-    console.print(f"[bold green] Success:[/bold green] {message}")
 
-def get_auth_token(username, password):
+def print_success(message: str) -> None:
+    console.print(f"[bold green]Success:[/bold green] {message}")
+
+
+def scan_command_help() -> str:
+    return (
+        "Profiles and required flags:\n"
+        "  web       -> requires --url\n"
+        "  developer -> requires --src\n"
+        "  full      -> requires both --url and --src\n\n"
+        "AI flags:\n"
+        "  --enable-ai   (default)\n"
+        "  --disable-ai\n\n"
+        "Examples:\n"
+        "  python -m cli.cli start-scan --profile web --url https://example.com --enable-ai\n"
+        "  python -m cli.cli start-scan --profile developer --src ./myrepo --disable-ai\n"
+        "  python -m cli.cli start-scan --profile full --url https://example.com --src ./myrepo"
+    )
+
+
+def get_auth_token(username: str | None, password: str | None) -> str | None:
     token_url = f"{BACKEND_API_URL}/api/v1/auth/token"
     data = {"username": username, "password": password}
     try:
@@ -59,10 +65,11 @@ def get_auth_token(username, password):
     except Exception:
         return None
 
-# -----------------------------
-# Scheduler bootstrap
-# -----------------------------
+
 def ensure_scheduler_initialized():
+    from engine.scheduler.runtime import get_scheduler, init_scheduler
+    from config.settings import settings
+
     try:
         return get_scheduler()
     except RuntimeError:
@@ -71,62 +78,55 @@ def ensure_scheduler_initialized():
             max_concurrent_tasks=settings.SCHEDULER_MAX_CONCURRENT_TASKS,
         )
 
-# -----------------------------
-# Scan submission
-# -----------------------------
-def handle_start_scan(token, args):
-    """
-    Phase 1.5–correct scan submission.
-    """
 
-    # ---- HARD VALIDATION (THIS WAS MISSING) ----
-    if args.profile.lower() == "web":
+def _validate_scan_args(args) -> None:
+    profile = args.profile.lower()
+    if profile == "web":
         if not args.url:
-            raise SystemExit("❌ WEB scan requires --url")
-    else:
+            raise SystemExit("WEB scan requires --url")
+        return
+    if profile == "developer":
         if not args.src:
-            raise SystemExit("❌ Non-WEB scan requires --src")
+            raise SystemExit("DEVELOPER scan requires --src")
+        return
+    if profile == "full":
+        if not args.url or not args.src:
+            raise SystemExit("FULL scan requires both --url and --src")
+        return
+    raise SystemExit(f"Unsupported profile: {args.profile}")
 
-    # ---- Canonical scan request ----
+
+def handle_start_scan(token: str | None, args) -> None:
+    _validate_scan_args(args)
+
     scan_request = {
         "profile": args.profile.upper(),
-        "enable_ai": False,
+        "enable_ai": args.enable_ai,
     }
-
-    if args.profile.lower() == "web":
+    if args.url:
         scan_request["target_url"] = args.url
-    else:
+    if args.src:
         scan_request["source_code_path"] = args.src
 
     console.print("[dim]Scan request payload:[/dim]")
     console.print(json.dumps(scan_request, indent=2))
 
-    # ---- Local engine path ----
-    try:
-        scheduler = ensure_scheduler_initialized()
-        submitter = ScanSubmitter(scheduler)
+    # Local mode only when auth token is not available
+    if not token:
+        try:
+            from engine.services.scan_submitter import ScanSubmissionError, ScanSubmitter
 
-        with console.status("[bold yellow]Submitting scan to local engine...", spinner="earth"):
-            scan_id = submitter.submit_scan(scan_request)
+            scheduler = ensure_scheduler_initialized()
+            submitter = ScanSubmitter(scheduler)
 
-        print_success("Scan accepted by local engine!")
+            with console.status("[bold yellow]Submitting scan to local engine...", spinner="earth"):
+                submitter.submit_scan(scan_request)
 
-        table = Table(title="Scan Details", show_header=True, header_style="bold magenta")
-        table.add_column("Field", style="dim")
-        table.add_column("Value", style="bold white")
-        table.add_row("Scan ID", scan_id)
-        table.add_row("Profile", scan_request["profile"])
-        table.add_row(
-            "Target",
-            scan_request.get("target_url") or scan_request.get("source_code_path"),
-        )
-        console.print(table)
-        return
+            print_success("Scan accepted by local engine!")
+            return
+        except Exception as exc:
+            console.print(f"[dim]Local engine unavailable ({exc}), falling back to API...[/dim]")
 
-    except ScanSubmissionError:
-        console.print("[dim]Local engine unavailable, falling back to API...[/dim]")
-
-    # ---- API fallback ----
     scan_url = f"{BACKEND_API_URL}/api/v1/scans/start"
     headers = {
         "Authorization": f"Bearer {token}",
@@ -135,14 +135,12 @@ def handle_start_scan(token, args):
 
     payload = {
         "profile": args.profile.lower(),
+        "enable_ai": args.enable_ai,
     }
-
     if args.url:
         payload["target_url"] = args.url
-
     if args.src:
         payload["source_code_path"] = args.src
-
     if args.cookie:
         payload["auth_cookie"] = args.cookie
 
@@ -150,34 +148,28 @@ def handle_start_scan(token, args):
     console.print(json.dumps(payload, indent=2))
 
     with console.status("[bold yellow]Launching scan via API...", spinner="earth"):
-        response = requests.post(
-            scan_url,
-            headers=headers,
-            json=payload,
-            timeout=30,
-        )
+        response = requests.post(scan_url, headers=headers, json=payload, timeout=30)
         response.raise_for_status()
-
         data = response.json()
 
-        print_success("Scan job accepted via API!")
+    print_success("Scan job accepted via API!")
+    table = Table(title="Scan Details", show_header=True, header_style="bold magenta")
+    table.add_column("Field", style="dim")
+    table.add_column("Value", style="bold white")
+    table.add_row("Scan ID", data.get("scan_id", ""))
+    table.add_row("Profile", str(data.get("profile", "")))
+    table.add_row("Target", payload.get("target_url") or payload.get("source_code_path") or "")
+    console.print(table)
 
-        table = Table(title="Scan Details", show_header=True, header_style="bold magenta")
-        table.add_column("Field", style="dim")
-        table.add_column("Value", style="bold white")
-        table.add_row("scan ID", data.get("scan_id"))
-        table.add_row("Profile", data.get("profile"))
-        table.add_row("Target", scan_request.get("target_url") or scan_request.get("source_code_path") or "Local Source")
 
-        console.print(table)
-
-# -----------------------------
-# CLI Entry
-# -----------------------------
-def main():
+def main() -> None:
     print_header()
 
-    parser = argparse.ArgumentParser(description="Project Sentinel CLI")
+    parser = argparse.ArgumentParser(
+        description="Project Sentinel CLI",
+        epilog="Use `python -m cli.cli start-scan -h` for profile flags and examples.",
+        formatter_class=argparse.RawTextHelpFormatter,
+    )
 
     auth_group = parser.add_argument_group("Authentication")
     auth_group.add_argument("-u", "--username", default=os.environ.get("SENTINEL_USER"))
@@ -185,20 +177,44 @@ def main():
 
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    scan_parser = subparsers.add_parser("start-scan", help="Start a scan")
-    scan_parser.add_argument("--profile", required=True, choices=["web", "developer", "full"])
-    scan_parser.add_argument("--url", help="Target URL (WEB scans)")
-    scan_parser.add_argument("--src", help="Source path (CODE/IAC scans)")
+    scan_parser = subparsers.add_parser(
+        "start-scan",
+        help="Start a scan",
+        description="Start a scan with explicit profile/target requirements.",
+        epilog=scan_command_help(),
+        formatter_class=argparse.RawTextHelpFormatter,
+    )
+    scan_parser.add_argument(
+        "--profile",
+        required=True,
+        choices=["web", "developer", "full"],
+        help="Scan mode: web|developer|full.",
+    )
+    scan_parser.add_argument("--url", help="Target URL (required for web/full)")
+    scan_parser.add_argument("--src", help="Source path (required for developer/full)")
     scan_parser.add_argument("--cookie", help="Auth cookie")
+    scan_parser.add_argument(
+        "--enable-ai",
+        dest="enable_ai",
+        action="store_true",
+        default=True,
+        help="Enable AI post-processing (default: enabled)",
+    )
+    scan_parser.add_argument(
+        "--disable-ai",
+        dest="enable_ai",
+        action="store_false",
+        help="Disable AI post-processing",
+    )
     scan_parser.set_defaults(func=handle_start_scan)
 
     args = parser.parse_args()
-
     token = get_auth_token(args.username, args.password)
     if not token:
         console.print("[dim]Auth token not available (local engine mode assumed)[/dim]")
 
     args.func(token, args)
+
 
 if __name__ == "__main__":
     main()

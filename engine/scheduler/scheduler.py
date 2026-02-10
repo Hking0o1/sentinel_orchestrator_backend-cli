@@ -73,9 +73,6 @@ class ScanScheduler:
         self._max_concurrent_tasks = max_concurrent_tasks
         self._max_heavy_tasks = max_heavy_tasks
 
-        # ---- Internal scheduler state ----
-        self._in_flight = InFlightRegistry()
-
         # task_id -> runtime state (scheduler-owned)
         self._task_state: Dict[str, TaskRuntimeState] = {}
         self._dependents: dict[str, set[str]] = {}
@@ -215,9 +212,9 @@ class ScanScheduler:
             responsible for execution (Celery later)
         """
         logger.error(
-            "SCHEDULER TICK ENTER | ready=%d | inflight=%d | pid=%d",
+            "SCHEDULER TICK ENTER | ready=%d | inflight=%d | pid=%d ",
             len(self.queue),
-            len(self._in_flight),
+            len(self.in_flight),
             os.getpid(),
         )
 
@@ -227,7 +224,7 @@ class ScanScheduler:
             ">>> Scheduler tick | ready:",
             len(self.queue),
             "| inflight:",
-            len(self._in_flight),
+            len(self.in_flight),
         )
         
         while True:
@@ -243,6 +240,9 @@ class ScanScheduler:
                 continue
 
             if not self.resources.can_acquire(td.cost_units):
+                # Preserve READY task in queue when backpressure hits.
+                # Without this, a popped READY task is lost and DAG can stall.
+                self.queue.push(self._compute_priority(task_id), task_id)
                 break  # backpressure
 
             # FSM transition
@@ -274,8 +274,8 @@ class ScanScheduler:
                 task_id,
                 td.cost_units,
                 "resource_limit",
-                len(self._in_flight),
-                self.resources.can_acquire,
+                len(self.in_flight),
+                self.resources.available_tokens,
             )
 
 
@@ -295,7 +295,7 @@ class ScanScheduler:
         """
 
         logger.critical(
-            "🔥🔥🔥 ON_TASK_COMPLETE CALLED | task_id=%s | success=%s",
+            "<<<<<< ON_TASK_COMPLETE CALLED | task_id=%s | success=%s >>>>>>>>",
             task_id,
             success,
         )
@@ -309,7 +309,7 @@ class ScanScheduler:
         td = self.tasks[task_id]
 
         # ---- Idempotency guard ----
-        if rt.state in ("COMPLETED", "FAILED"):
+        if rt.state in {TaskState.COMPLETED, TaskState.FAILED}:
             logger.warning(
                 "DUPLICATE COMPLETION EVENT IGNORED | task_id=%s | state=%s",
                 task_id,

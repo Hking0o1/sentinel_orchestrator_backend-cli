@@ -46,11 +46,22 @@ def build_scan_dag(scan_request: Dict) -> List[TaskDescriptor]:
     tasks.append(correlation_task)
     
     # -----------------------------
-    # Optional AI task
+    # Optional AI tasks
     # -----------------------------
     last_task_id = correlation_task.task_id
 
     if scan_request.get("enable_ai", False):
+        attack_path_task = TaskDescriptor(
+            task_id=f"{scan_id}:ATTACK_PATH",
+            scan_id=scan_id,
+            task_type="ATTACK_PATH",
+            cost_units=2,
+            dependencies=frozenset({last_task_id}),
+            retries_allowed=0,
+        )
+        tasks.append(attack_path_task)
+        last_task_id = attack_path_task.task_id
+
         ai_task = TaskDescriptor(
             task_id=f"{scan_id}:AI_SUMMARY",
             scan_id=scan_id,
@@ -99,11 +110,15 @@ def _build_tool_tasks(scan_id: str, profile: str) -> List[TaskDescriptor]:
         "DEVELOPER": [
             ("SAST", 3),
             ("SCA", 1),
+            ("IAC", 3),
+            ("CONTAINER", 2)
             
         ],
         "FULL": [
             ("SAST", 3),
             ("SCA", 1),
+            ("IAC", 3),
+            ("CONTAINER", 2),
             ("DAST_ZAP", 5),
             ("DAST_NIKTO", 3),
             ("DAST_SQLMAP", 4),

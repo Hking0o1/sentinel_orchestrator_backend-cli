@@ -62,9 +62,10 @@ async def start_scan(
         submitter.submit_scan(
             {
                 "scan_id": str(scan.id),
-                "profile": scan_in.profile,     
-                "target": scan.target,         
+                "profile": scan_in.profile,
+                "targets": targets,
                 "auth_cookie": scan_in.auth_cookie,
+                "enable_ai": scan_in.enable_ai,
             }
         )
     except Exception as exc:

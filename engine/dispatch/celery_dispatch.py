@@ -9,10 +9,13 @@ Responsibilities:
 - Never inspect DAG
 """
 import logging
+from pathlib import Path
 from engine.scheduler.scheduler import ScanScheduler
 from engine.scheduler.dag import TaskDescriptor
 from scanner import tasks as scanner_tasks
 from engine.scheduler.events import drain_scheduler_events
+from config.settings import settings
+from engine.runtime.meta_loader import load_execution_context
 
 
 logger = logging.getLogger(__name__)
@@ -50,7 +53,6 @@ class CeleryDispatcher:
 
         This method must remain dumb and explicit.
         """
-        from scanner.tasks import on_task_success, on_task_failure
         task_type = task.task_type
 
         # ---- TOOL TASKS (generic) ----
@@ -74,27 +76,65 @@ class CeleryDispatcher:
             )
             scanner_tasks.run_tool_task.apply_async(
                 args=[task_id, task.scan_id, task_type],
-                link=on_task_success.s(task_id),
-                link_error=on_task_failure.s(task_id),
             )
 
         # ---- POST-PROCESS TASKS ----
         elif task_type == "CORRELATION":
+            base_dir = Path(settings.SCAN_RESULTS_DIR) / task.scan_id
+            input_paths = []
+            for dep_task_id in task.dependencies:
+                dep_rt = self.scheduler.runtime.get(dep_task_id)
+                if dep_rt and dep_rt.output_paths:
+                    input_paths.extend(dep_rt.output_paths)
+
+            output_path = str(base_dir / "correlation" / "correlated_findings.jsonl")
             scanner_tasks.run_correlation_task.delay(
                 task_id=task.task_id,
                 scan_id=task.scan_id,
+                input_paths=input_paths,
+                output_path=output_path,
             )
 
         elif task_type == "AI_SUMMARY":
+            base_dir = Path(settings.SCAN_RESULTS_DIR) / task.scan_id
+            findings_path = str(base_dir / "correlation" / "correlated_findings.jsonl")
             scanner_tasks.run_ai_summary_task.delay(
                 task_id=task.task_id,
                 scan_id=task.scan_id,
+                findings_path=findings_path,
+                output_path=str(base_dir / "ai" / "summary.txt"),
+                progress_path=str(base_dir / "ai" / "summary.progress"),
+                attack_path_path=str(base_dir / "ai" / "attack_path.txt"),
+                provider_config={
+                    "provider": settings.AI_PROVIDER,
+                    "base_url": settings.OLLAMA_BASE_URL,
+                    "model": settings.OLLAMA_MODEL,
+                    "timeout_sec": settings.AI_TIMEOUT_SEC,
+                },
+            )
+
+        elif task_type == "ATTACK_PATH":
+            base_dir = Path(settings.SCAN_RESULTS_DIR) / task.scan_id
+            ctx = load_execution_context(task.scan_id)
+            scanner_tasks.run_attack_path_task.delay(
+                task_id=task.task_id,
+                scan_id=task.scan_id,
+                findings_path=str(base_dir / "correlation" / "correlated_findings.jsonl"),
+                output_path=str(base_dir / "ai" / "attack_path.txt"),
+                target_url=ctx.target_url,
             )
 
         elif task_type == "REPORT":
+            base_dir = Path(settings.SCAN_RESULTS_DIR) / task.scan_id
+            ai_summary_path = str(base_dir / "ai" / "summary.txt")
+            ai_summary = ai_summary_path if Path(ai_summary_path).exists() else None
             scanner_tasks.run_report_task.delay(
                 task_id=task.task_id,
                 scan_id=task.scan_id,
+                findings_path=str(base_dir / "correlation" / "correlated_findings.jsonl"),
+                ai_summary_path=ai_summary,
+                json_output_path=str(base_dir / "report" / "report.json"),
+                pdf_output_path=str(base_dir / "report" / "report.pdf"),
             )
 
         else:

@@ -28,6 +28,7 @@ class ScanSeverity(str, Enum):
 # --- Models ---
 class ScanCreate(pydantic.BaseModel):
     profile: ScanProfile
+    enable_ai: bool = True
     target_url: Optional[AnyUrl] = None
     source_code_path: Optional[str] = None
     auth_cookie: Optional[str] = None
