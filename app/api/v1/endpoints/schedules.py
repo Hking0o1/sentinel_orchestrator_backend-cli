@@ -12,6 +12,7 @@ from app.db.session import get_db_session
 from app.db import crud
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 @router.post(
     "/",
@@ -95,8 +96,12 @@ async def update_existing_scan_schedule(
     Update a scan schedule's properties.
     Ensures the user owns the schedule.
     """
-    # First, get the schedule to ensure it exists and we can check ownership
-    schedule = await get_schedule_by_id(db, schedule_id=schedule_id, current_user=current_user)
+    # First, ensure it exists and the current user can access it.
+    await get_schedule_by_id(
+        schedule_id=schedule_id,
+        current_user=current_user,
+        db=db,
+    )
     
     # Now, update it
     updated_schedule = await crud.update_scan_schedule(
@@ -119,17 +124,16 @@ async def delete_existing_scan_schedule(
     Delete a scan schedule.
     Ensures the user owns the schedule.
     """
-    # First, get the schedule to ensure it exists and we can check ownership
-    schedule = await get_schedule_by_id(db, schedule_id=schedule_id, current_user=current_user)
+    # First, ensure it exists and the current user can access it.
+    await get_schedule_by_id(
+        schedule_id=schedule_id,
+        current_user=current_user,
+        db=db,
+    )
     
     # Now, delete it
     await crud.delete_scan_schedule(db, schedule_id=schedule_id)
     return
-
-
-
-router = APIRouter()
-logger = logging.getLogger(__name__)
 
 @router.post("/internal/dispatch-due")
 async def dispatch_due_schedules(
@@ -147,19 +151,21 @@ async def dispatch_due_schedules(
 
     count = 0
     for sched in schedules:
+        targets = {}
+        if sched.target_url:
+            targets["target_url"] = sched.target_url
+        if sched.source_code_path:
+            targets["source_code_path"] = sched.source_code_path
+
         submitter.submit_scan(
             {
                 "scan_id": str(sched.id),
                 "profile": sched.profile,
-                "targets": sched.targets,
+                "targets": targets,
                 "auth_cookie": sched.auth_cookie,
             }
         )
         count += 1
-
-        # IMPORTANT: update next_run_at here (even naive)
-        sched.next_run_at = sched.compute_next_run()
-        await db.commit()
 
     logger.info("Dispatched %d scheduled scans", count)
 

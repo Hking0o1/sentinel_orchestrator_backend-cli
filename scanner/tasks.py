@@ -19,7 +19,8 @@ from scanner.reporting.json_writer import write_json_report
 from scanner.reporting.pdf_writer import write_pdf_report
 from app.db.sync_session import get_sync_db
 from app.db import models as db_models  # noqa: F401  # ensure ORM tables are registered in worker
-from app.models.scan import Scan, ScanStatus
+from app.models.scan import ScanStatus
+from app.db.models import ScanJob
 from app.services.jira import jira_service
 from app.services.notifier import notifier
 from config.settings import settings
@@ -66,11 +67,11 @@ def _set_scan_status(scan_id: str, status: ScanStatus) -> None:
     db = None
     try:
         db = next(get_sync_db())
-        scan = db.query(Scan).filter(Scan.id == scan_id).one_or_none()
-        if not scan:
+        scan_job = db.query(ScanJob).filter(ScanJob.id == scan_id).one_or_none()
+        if not scan_job:
             logger.warning("Cannot update status: scan not found | scan_id=%s", scan_id)
             return
-        scan.status = status
+        scan_job.status = status
         db.commit()
     except Exception:
         logger.exception("Failed to update scan status | scan_id=%s | status=%s", scan_id, status)
@@ -152,8 +153,8 @@ def run_tool_task(self, task_id: str, scan_id: str, task_type: str):
     try:
         db = next(get_sync_db())
 
-        scan = db.query(Scan).filter(Scan.id == scan_id).one_or_none()
-        if not scan:
+        scan_job = db.query(ScanJob).filter(ScanJob.id == scan_id).one_or_none()
+        if not scan_job:
             raise RuntimeError(f"Scan not found: {scan_id}")
 
         ctx = load_execution_context(scan_id)
