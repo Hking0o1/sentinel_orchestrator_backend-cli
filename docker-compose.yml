@@ -24,6 +24,9 @@ services:
     volumes:
       # Use a bind mount for scan results
       - ./scan_results:/app/scan_results
+      # Keep source project mount aligned with worker so backend validation
+      # and worker execution see the same paths.
+      - ./scannable_projects:/app/projects_to_scan
     depends_on:
       db:
         condition: service_healthy

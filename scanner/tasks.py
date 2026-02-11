@@ -18,6 +18,7 @@ from scanner.correlation.disk_correlator import correlate_from_disk
 from scanner.reporting.json_writer import write_json_report
 from scanner.reporting.pdf_writer import write_pdf_report
 from app.db.sync_session import get_sync_db
+from app.db import models as db_models  # noqa: F401  # ensure ORM tables are registered in worker
 from app.models.scan import Scan, ScanStatus
 from app.services.jira import jira_service
 from app.services.notifier import notifier
@@ -365,7 +366,26 @@ def run_ai_summary_task(
                     continue
 
                 try:
-                    chunk_input = list(chunk)
+                    chunk_input = []
+                    for finding in chunk:
+                        # Keep AI input compact and human-oriented to avoid
+                        # huge JSON dumps in model output.
+                        chunk_input.append(
+                            {
+                                "severity": finding.get("severity"),
+                                "title": finding.get("title"),
+                                "tool": finding.get("tool_source") or finding.get("tool"),
+                                "description": (finding.get("description") or "")[:500],
+                                "remediation": finding.get("remediation_steps")
+                                or finding.get("remediation")
+                                or "Provide concrete remediation steps.",
+                                "location": (
+                                    (finding.get("code_location") or {}).get("file_path")
+                                    or (finding.get("endpoint_location") or {}).get("url")
+                                ),
+                                "cve_id": finding.get("cve_id"),
+                            }
+                        )
                     if attack_path_context:
                         chunk_input.append(
                             {
@@ -441,6 +461,7 @@ def run_report_task(
     ai_summary_path: str | None,
     json_output_path: str,
     pdf_output_path: str,
+    attack_path_path: str | None = None,
 ):
     """
     POST_PROCESS DAG task: Report generation.
@@ -453,25 +474,19 @@ def run_report_task(
 
         #  Optional AI summary (NON-FATAL)
         effective_ai_summary_path = None
-        if ai_summary_path:
-            try:
-                write_json_report(
-                    scan_id=scan_id,
-                    findings_path=findings_path,
-                    ai_summary_path=ai_summary_path,
-                    output_path=ai_summary_path,
-                )
-                effective_ai_summary_path = ai_summary_path
-            except Exception as ai_exc:
-                logger.warning(
-                    "AI summary generation failed (ignored): %s", ai_exc
-                )
+        if ai_summary_path and os.path.exists(ai_summary_path):
+            effective_ai_summary_path = ai_summary_path
+
+        effective_attack_path_path = None
+        if attack_path_path and os.path.exists(attack_path_path):
+            effective_attack_path_path = attack_path_path
 
         # Core reports (MUST succeed)
         json_path = write_json_report(
             scan_id=scan_id,
             findings_path=findings_path,
             ai_summary_path=effective_ai_summary_path,
+            attack_path_path=effective_attack_path_path,
             output_path=json_output_path,
         )
 
@@ -479,6 +494,7 @@ def run_report_task(
             scan_id=scan_id,
             findings_path=findings_path,
             ai_summary_path=effective_ai_summary_path,
+            attack_path_path=effective_attack_path_path,
             output_path=pdf_output_path,
         )
 

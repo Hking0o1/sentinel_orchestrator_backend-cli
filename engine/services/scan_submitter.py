@@ -2,6 +2,7 @@ from typing import Dict, Any, Optional
 import json
 from pathlib import Path
 from urllib.parse import urlparse
+import os
 from config.settings import settings
 import logging
 from engine.planner.dag_builder import build_scan_dag
@@ -9,6 +10,12 @@ from engine.scheduler.scheduler import ScanScheduler
 from app.models.scan import ScanProfile
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_SOURCE_ROOTS = (
+    "/app/projects_to_scan",
+    "/app/scannable_projects",
+    "./scannable_projects",
+)
 class ScanSubmissionError(Exception):
     """Raised when a scan cannot be submitted."""
 
@@ -133,13 +140,38 @@ class ScanSubmitter:
         return str(target_url).strip()
 
     @staticmethod
-    def _validate_source_path(src_path: str) -> str:
-        resolved = Path(str(src_path)).expanduser().resolve()
-        if not resolved.exists():
-            raise ValueError(f"source_code_path does not exist: {resolved}")
-        if not resolved.is_dir():
-            raise ValueError(f"source_code_path must be a directory: {resolved}")
-        return str(resolved)
+    def _source_roots() -> tuple[Path, ...]:
+        env_roots = os.getenv("SCAN_SOURCE_ROOTS", "").strip()
+        configured = [r.strip() for r in env_roots.split(",") if r.strip()]
+        roots = configured or list(DEFAULT_SOURCE_ROOTS)
+        return tuple(Path(r).expanduser().resolve() for r in roots)
+
+    @classmethod
+    def _validate_source_path(cls, src_path: str) -> str:
+        requested = Path(str(src_path)).expanduser()
+        direct = requested.resolve()
+
+        if direct.exists() and direct.is_dir():
+            return str(direct)
+
+        # Remap by project folder name under known mounted roots.
+        project_name = requested.name if requested.name else str(requested).strip("/\\")
+        if project_name:
+            for root in cls._source_roots():
+                candidate = (root / project_name).resolve()
+                if candidate.exists() and candidate.is_dir():
+                    logger.info(
+                        "Resolved source path alias | requested=%s | resolved=%s",
+                        src_path,
+                        candidate,
+                    )
+                    return str(candidate)
+
+        search_roots = ", ".join(str(r) for r in cls._source_roots())
+        raise ValueError(
+            "source_code_path does not exist or is not mounted in backend. "
+            f"requested={direct}. Checked roots: {search_roots}"
+        )
 
     def _normalize_request(self, scan_request: dict) -> dict:
         normalized: dict = {}

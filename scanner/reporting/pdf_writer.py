@@ -13,6 +13,7 @@ def write_pdf_report(
     findings_path: str,
     ai_summary_path: Optional[str],
     output_path: str,
+    attack_path_path: Optional[str] = None,
     max_findings: int = 500,
 ) -> str:
     """
@@ -50,6 +51,20 @@ def write_pdf_report(
                     if y < 40:
                         new_page()
                     c.drawString(40, y, line.strip())
+                    y -= 14
+
+            y -= 20
+
+        if attack_path_path:
+            c.setFont("Helvetica", 10)
+            c.drawString(40, y, "Attack Path Analysis:")
+            y -= 20
+
+            with open(attack_path_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    if y < 40:
+                        new_page()
+                    c.drawString(40, y, line.strip()[:140])
                     y -= 14
 
             y -= 20

@@ -11,6 +11,7 @@ def write_json_report(
     findings_path: str,
     ai_summary_path: Optional[str],
     output_path: str,
+    attack_path_path: Optional[str] = None,
 ) -> str:
     """
     Stream findings into a canonical JSON report.
@@ -42,6 +43,12 @@ def write_json_report(
                 with open(ai_summary_path, "r", encoding="utf-8") as s:
                     summary_text = s.read()
                 f.write(json.dumps(summary_text))
+
+            if attack_path_path:
+                f.write(",\n  \"attack_path_analysis\": ")
+                with open(attack_path_path, "r", encoding="utf-8") as ap:
+                    attack_text = ap.read()
+                f.write(json.dumps(attack_text))
 
             f.write("\n}\n")
 

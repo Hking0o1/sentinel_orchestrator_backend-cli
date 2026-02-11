@@ -84,6 +84,28 @@ def test_submitter_rejects_missing_source_path(tmp_path, monkeypatch):
     assert "does not exist" in str(exc.value)
 
 
+def test_submitter_resolves_source_path_from_configured_roots(tmp_path, monkeypatch):
+    project_dir = tmp_path / "Cybergeeta-encryption-tool"
+    project_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("SCAN_SOURCE_ROOTS", str(tmp_path))
+    monkeypatch.setattr("engine.services.scan_submitter.settings.SCAN_RESULTS_DIR", str(tmp_path / "results"))
+
+    class _StubScheduler:
+        def register_scan_dag(self, _scan_id, _dag):
+            return None
+
+    submitter = ScanSubmitter(_StubScheduler())
+    normalized = submitter.validate_scan_request(
+        {
+            "scan_id": "scan-3b",
+            "profile": "DEVELOPER",
+            "targets": {"source_code_path": "/app/projects_to_scan/Cybergeeta-encryption-tool"},
+        }
+    )
+
+    assert normalized["targets"]["source_code_path"] == str(project_dir.resolve())
+
+
 def test_run_report_task_triggers_scan_finalization_hooks(tmp_path):
     findings = tmp_path / "findings.jsonl"
     findings.write_text('{"severity":"HIGH","title":"x"}\n', encoding="utf-8")

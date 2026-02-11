@@ -72,11 +72,26 @@ class GeminiProvider(AIProvider):
         for f in findings:
             title = f.get("title", "Unnamed issue")
             severity = f.get("severity", "UNKNOWN")
-            lines.append(f"- [{severity}] {title}")
+            desc = (f.get("description") or "").strip()
+            remediation = (f.get("remediation") or "").strip()
+            location = (f.get("location") or "").strip()
+            lines.append(
+                f"- [{severity}] {title} | location={location or 'n/a'} | "
+                f"desc={desc[:180]} | remediation_hint={remediation[:120]}"
+            )
 
         return (
-            "Summarize the following security findings concisely "
-            "for an engineering report:\n\n"
+            "You are a principal application security engineer.\n"
+            "Write a HUMAN-READABLE Markdown report for developers and product owners.\n"
+            "Do NOT output JSON.\n"
+            "Keep language simple and practical.\n"
+            "Required sections:\n"
+            "1) Executive Summary (plain language)\n"
+            "2) Top Risks (bullet list with severity and impact)\n"
+            "3) Recommended Fixes (numbered, concrete steps)\n"
+            "4) Quick Wins This Sprint (3-5 items)\n"
+            "5) Verification Steps (how to confirm fixes)\n\n"
+            "Findings:\n"
             + "\n".join(lines)
         )
 
@@ -132,14 +147,27 @@ class OllamaProvider(AIProvider):
             title = f.get("title", "Unnamed issue")
             severity = f.get("severity", "UNKNOWN")
             desc = (f.get("description") or f.get("details") or "").strip()
+            remediation = (f.get("remediation") or "").strip()
+            location = (f.get("location") or "").strip()
             if desc:
-                lines.append(f"- [{severity}] {title}: {desc[:180]}")
+                lines.append(
+                    f"- [{severity}] {title} | location={location or 'n/a'} | "
+                    f"desc={desc[:180]} | remediation_hint={remediation[:120]}"
+                )
             else:
-                lines.append(f"- [{severity}] {title}")
+                lines.append(f"- [{severity}] {title} | location={location or 'n/a'}")
 
         return (
-            "You are a senior application security engineer. "
-            "Produce a concise technical summary and prioritized remediation plan.\n\n"
+            "You are a senior application security engineer.\n"
+            "Write a HUMAN-READABLE Markdown report.\n"
+            "Do NOT output JSON.\n"
+            "Use clear, non-jargon language where possible.\n"
+            "Required sections:\n"
+            "## Executive Summary\n"
+            "## Top Risks\n"
+            "## Recommended Remediations (step-by-step)\n"
+            "## Quick Wins (this sprint)\n"
+            "## Verification Checklist\n\n"
             "Findings:\n"
             + "\n".join(lines)
         )

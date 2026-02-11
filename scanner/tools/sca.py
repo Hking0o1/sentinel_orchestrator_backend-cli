@@ -1,5 +1,6 @@
 import os
 import json
+from collections import deque
 from typing import Dict, Any
 from .utils import (
     run_subprocess, is_tool_installed, normalize_severity, 
@@ -10,6 +11,22 @@ from scanner.tools.registry import register_tool
 
 log = get_logger("scanner.tools.sca")
 REQUIRES_EXTERNAL_DEPENDENCIES = True
+
+def _tail_text_file(path: str, max_lines: int = 40) -> str:
+    """
+    Read the last N lines from a text file safely.
+    Uses replacement for undecodable bytes to avoid crashing diagnostics.
+    """
+    if not os.path.exists(path):
+        return ""
+
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            last = deque(f, maxlen=max_lines)
+        return "".join(last).strip()
+    except Exception as exc:
+        return f"<failed to read log tail: {exc}>"
+
 
 def run_sca_scan(src_path: str, output_dir: str) -> Dict[str, Any]:
     """
@@ -47,22 +64,26 @@ def run_sca_scan(src_path: str, output_dir: str) -> Dict[str, Any]:
     # Run the subprocess
     success, output = run_subprocess(cmd, timeout=1800)
     
-    # --- FIX: Error Visibility ---
+    # --- Error visibility (stable + bounded) ---
     if not success:
-        log.error("Dependency-Check FAILED.")
-        # Read the last 20 lines of the log file and print them to the console
-        if os.path.exists(tool_log_file):
-            try:
-                with open(tool_log_file, 'r') as f:
-                    lines = f.readlines()
-                    last_lines = "".join(lines[-20:])
-                    log.error(f"--- TAIL OF DEPENDENCY-CHECK LOG ---\n{last_lines}\n------------------------------------")
-            except Exception as e:
-                log.error(f"Could not read log file: {e}")
+        log.error("Dependency-Check failed for path: %s", src_path)
+
+        tail = _tail_text_file(tool_log_file, max_lines=40)
+        if tail:
+            log.error(
+                "Dependency-Check log tail (%s):\n%s",
+                tool_log_file,
+                tail,
+            )
         else:
-            log.error(f"No log file found at {tool_log_file}")
-            # Print stdout/stderr captured by subprocess as backup
-            log.error(f"Subprocess Output:\n{output[-1000:]}") # Last 1000 chars
+            truncated = (output or "")[-1500:]
+            if truncated:
+                log.error("Dependency-Check subprocess output (tail):\n%s", truncated)
+            else:
+                log.error(
+                    "Dependency-Check failed but produced no log/output. "
+                    "Check tool installation and NVD connectivity."
+                )
 
     findings = []
     if os.path.exists(json_report):

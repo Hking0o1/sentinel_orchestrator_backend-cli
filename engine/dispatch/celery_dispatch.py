@@ -129,11 +129,14 @@ class CeleryDispatcher:
             base_dir = Path(settings.SCAN_RESULTS_DIR) / task.scan_id
             ai_summary_path = str(base_dir / "ai" / "summary.txt")
             ai_summary = ai_summary_path if Path(ai_summary_path).exists() else None
+            attack_path_file = str(base_dir / "ai" / "attack_path.txt")
+            attack_path = attack_path_file if Path(attack_path_file).exists() else None
             scanner_tasks.run_report_task.delay(
                 task_id=task.task_id,
                 scan_id=task.scan_id,
                 findings_path=str(base_dir / "correlation" / "correlated_findings.jsonl"),
                 ai_summary_path=ai_summary,
+                attack_path_path=attack_path,
                 json_output_path=str(base_dir / "report" / "report.json"),
                 pdf_output_path=str(base_dir / "report" / "report.pdf"),
             )

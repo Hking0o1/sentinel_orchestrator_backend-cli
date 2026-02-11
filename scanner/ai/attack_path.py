@@ -27,6 +27,17 @@ CRAWLER_SURFACES = {
     "/api",
 }
 
+DEPENDENCY_KEYWORDS = {
+    "vulnerable lib",
+    "dependency",
+    "package-lock",
+    "pom.xml",
+    "requirements.txt",
+    "npm",
+    "pip",
+    "maven",
+}
+
 
 def generate_attack_path_analysis(
     *,
@@ -86,6 +97,14 @@ def _build_context(findings: list[dict[str, Any]], target_url: str | None) -> di
 
     leak_signals = sorted(k for k in LEAK_KEYWORDS if k in text_blob)
     crawler_signals = sorted(s for s in CRAWLER_SURFACES if s in text_blob or (target_url and s in target_url.lower()))
+    dependency_signals = sorted(k for k in DEPENDENCY_KEYWORDS if k in text_blob)
+    cve_ids = sorted(
+        {
+            str(f.get("cve_id")).strip()
+            for f in findings
+            if f.get("cve_id")
+        }
+    )
 
     return {
         "target_url": target_url,
@@ -93,6 +112,8 @@ def _build_context(findings: list[dict[str, Any]], target_url: str | None) -> di
         "high_severity_count": len(high_sev),
         "leak_signals": leak_signals,
         "crawler_surface_signals": crawler_signals,
+        "dependency_signals": dependency_signals,
+        "cve_ids": cve_ids,
         "top_findings": [
             {
                 "severity": f.get("severity"),
@@ -131,7 +152,43 @@ def _query_ollama(*, context: dict[str, Any], base_url: str, model: str, timeout
 
 
 def _fallback_analysis(context: dict[str, Any]) -> str:
-    score = min(10, max(1, len(context["leak_signals"]) + len(context["crawler_surface_signals"])))
+    score = min(
+        10,
+        max(
+            1,
+            len(context.get("leak_signals", []))
+            + len(context.get("crawler_surface_signals", []))
+            + len(context.get("dependency_signals", []))
+            + context.get("high_severity_count", 0),
+        ),
+    )
+    has_dependency_risk = bool(context.get("dependency_signals") or context.get("cve_ids"))
+
+    if has_dependency_risk:
+        path_block = (
+            "Suggested Attack Path:\n"
+            "1. Identify vulnerable dependency versions in lock/manifest files.\n"
+            "2. Trigger known exploit primitive tied to the vulnerable package.\n"
+            "3. Cause service disruption or controlled code path abuse.\n"
+            "4. Chain with exposed endpoints/secrets if available for impact escalation.\n\n"
+            "Mitigations:\n"
+            "- Upgrade vulnerable libraries to patched versions.\n"
+            "- Enforce dependency pinning and automated security updates.\n"
+            "- Add SCA policy gates in CI/CD for HIGH/CRITICAL CVEs.\n"
+            "- Validate untrusted input and add runtime protections/rate limits.\n"
+        )
+    else:
+        path_block = (
+            "Suggested Attack Path:\n"
+            "1. Crawl discoverable endpoints and metadata exposures.\n"
+            "2. Correlate leaked tokens/secrets with high-risk endpoints.\n"
+            "3. Use leaked context to escalate access and exfiltrate sensitive data.\n\n"
+            "Mitigations:\n"
+            "- Restrict crawler-exposed sensitive routes and debug assets.\n"
+            "- Rotate and vault secrets; block secrets in responses/logs.\n"
+            "- Add robots, authz checks, WAF rules, and anomaly monitoring.\n"
+        )
+
     return (
         "AI Attack Path Analysis (Fallback)\n\n"
         f"AI-Crawler Leak Risk Score: {score}/10\n"
@@ -140,12 +197,7 @@ def _fallback_analysis(context: dict[str, Any]) -> str:
         f"High/Critical Findings: {context.get('high_severity_count')}\n\n"
         f"Leak Signals: {', '.join(context.get('leak_signals') or ['none'])}\n"
         f"Crawler Surface Signals: {', '.join(context.get('crawler_surface_signals') or ['none'])}\n\n"
-        "Suggested Attack Path:\n"
-        "1. Crawl discoverable endpoints and metadata exposures.\n"
-        "2. Correlate leaked tokens/secrets with high-risk endpoints.\n"
-        "3. Use leaked context to escalate access and exfiltrate sensitive data.\n\n"
-        "Mitigations:\n"
-        "- Restrict crawler-exposed sensitive routes and debug assets.\n"
-        "- Rotate and vault secrets; block secrets in responses/logs.\n"
-        "- Add robots, authz checks, WAF rules, and anomaly monitoring.\n"
+        f"Dependency Signals: {', '.join(context.get('dependency_signals') or ['none'])}\n"
+        f"CVEs: {', '.join(context.get('cve_ids') or ['none'])}\n\n"
+        f"{path_block}"
     )
