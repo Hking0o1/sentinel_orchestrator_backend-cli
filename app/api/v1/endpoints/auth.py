@@ -12,8 +12,10 @@ from app.models.user import User, LoginResponse
 from app.db import crud
 from app.db.session import get_db_session
 from config.settings import settings
+import logging
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 @router.post("/token", response_model=LoginResponse)
 async def login_for_access_token(
@@ -25,7 +27,7 @@ async def login_for_access_token(
     This now performs a real database lookup.
     """
     
-    print(f"[AUTH] Received login attempt for user: {form_data.username}")
+    logger.info("Login attempt received")
     
     # --- REAL DATABASE LOOKUP ---
     # We fetch the user from the database by their email.
@@ -34,7 +36,7 @@ async def login_for_access_token(
     # 1. Check if user exists and
     # 2. Check if the password is correct
     if not user or not verify_password(form_data.password, user.hashed_password):
-        print("[AUTH] Login failed: Incorrect username or password.")
+        logger.warning("Login rejected: invalid credentials")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password",
@@ -43,14 +45,14 @@ async def login_for_access_token(
         
     # 3. Check if the user is active
     if not user.is_active:
-        print("[AUTH] Login failed: User is inactive.")
+        logger.warning("Login rejected: inactive user")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, 
             detail="Inactive user"
         )
         
     # --- Token Creation ---
-    print("[AUTH] Login successful. Creating access token.")
+    logger.info("Login successful. Creating token")
     access_token_expires = timedelta(
         minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES
     )

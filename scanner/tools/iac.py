@@ -1,5 +1,6 @@
 import os
 import json
+from pathlib import Path
 from typing import Dict, Any
 from .utils import (
     run_subprocess, 
@@ -14,11 +15,73 @@ from scanner.tools.registry import register_tool
 
 log = get_logger("scanner.tools.iac")
 
+
+def _has_iac_files(src_path: str) -> bool:
+    iac_suffixes = (
+        ".tf",
+        ".tfvars",
+        ".bicep",
+        ".template",
+        ".yaml",
+        ".yml",
+        ".json",
+    )
+    iac_names = {
+        "pulumi.yaml",
+        "pulumi.yml",
+        "cdk.json",
+        "kustomization.yaml",
+        "kustomization.yml",
+        "chart.yaml",
+    }
+
+    root = Path(src_path)
+    if not root.exists() or not root.is_dir():
+        return False
+
+    for current_root, dirs, files in os.walk(root):
+        dirs[:] = [d for d in dirs if d not in SCAN_EXCLUDE_DIRS]
+        for filename in files:
+            lower = filename.lower()
+            if lower in iac_names:
+                return True
+            if lower.endswith(iac_suffixes):
+                if any(
+                    marker in lower
+                    for marker in (
+                        "terraform",
+                        "cloudformation",
+                        "k8s",
+                        "kube",
+                        "helm",
+                        "deployment",
+                        "service",
+                        "ingress",
+                    )
+                ) or lower.endswith((".tf", ".tfvars", ".bicep", ".template")):
+                    return True
+
+    return False
+
+
 def run_iac_scan(src_path: str, output_dir: str) -> Dict[str, Any]:
     """
     Runs Checkov to find security flaws in Infrastructure-as-Code.
     """
     log.info(f"Starting Checkov scan on: {src_path}")
+
+    if not src_path or not os.path.isdir(src_path):
+        return {
+            "findings": [],
+            "raw_report": ("IAC_Checkov", "Skipped: invalid source path."),
+        }
+
+    if not _has_iac_files(src_path):
+        log.info("Skipping Checkov: no IaC files detected")
+        return {
+            "findings": [],
+            "raw_report": ("IAC_Checkov", "Skipped: no IaC files detected."),
+        }
     
     if not is_tool_installed("checkov"):
         log.error("Tool 'checkov' not found in PATH.")

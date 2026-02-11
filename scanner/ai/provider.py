@@ -1,7 +1,10 @@
 from typing import List, Dict, Any
 import time
 import requests
-import google.generativeai as genai
+try:
+    import google.generativeai as genai
+except Exception:  # pragma: no cover - optional dependency
+    genai = None
 
 from config.settings import settings
 
@@ -30,6 +33,10 @@ class GeminiProvider(AIProvider):
     def __init__(self, model_name: str = "gemini-2.5-flash", timeout_sec: int = 30):
         self.model_name = model_name
         self.timeout_sec = timeout_sec
+        if genai is None:
+            raise AIProviderError(
+                "google-generativeai is not installed; install it to use Gemini provider"
+            )
         if not settings.GEMINI_API_KEY:
             raise AIProviderError("GEMINI_API_KEY is not configured")
         genai.configure(api_key=settings.GEMINI_API_KEY)

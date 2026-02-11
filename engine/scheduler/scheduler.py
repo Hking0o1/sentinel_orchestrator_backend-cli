@@ -3,6 +3,7 @@ import time
 import json
 import os 
 import logging
+import heapq
 from datetime import datetime
 from typing import Dict, Iterable, Callable, Optional
 from croniter import croniter
@@ -220,12 +221,6 @@ class ScanScheduler:
 
         self._state_snapshot("TICK START")
         scheduled = 0
-        print(
-            ">>> Scheduler tick | ready:",
-            len(self.queue),
-            "| inflight:",
-            len(self.in_flight),
-        )
         
         while True:
             task_id = self.queue.pop()
@@ -257,7 +252,20 @@ class ScanScheduler:
                 task_id,
                 td.cost_units,
             )
-            dispatch_fn(task_id, td)
+            try:
+                dispatch_fn(task_id, td)
+            except Exception as exc:
+                logger.exception(
+                    "Dispatch failed | task_id=%s | type=%s",
+                    task_id,
+                    td.task_type,
+                )
+                self.on_task_complete(
+                    task_id=task_id,
+                    success=False,
+                    error=f"Dispatch error: {exc}",
+                )
+                continue
             self._state_snapshot("AFTER DISPATCH")
             scheduled += 1
             if (
@@ -347,6 +355,8 @@ class ScanScheduler:
                 
             else:
                 self._handle_failure(task_id, error)
+
+            self._cleanup_scan_if_terminal(td.scan_id)
         except Exception:
             logger.exception(
                 "SCHEDULER STATE TRANSITION FAILED | task_id=%s",
@@ -443,6 +453,61 @@ class ScanScheduler:
                 rt.state = TaskState.BLOCKED
                 self.metrics.inc("tasks_blocked_total")
                 self._block_descendants(child)
+
+    def _cleanup_scan_if_terminal(self, scan_id: str) -> None:
+        """
+        Remove completed scan state from in-memory runtime/queue structures.
+
+        Without cleanup, long-lived scheduler processes accumulate finished tasks
+        and stale queue entries.
+        """
+        scan_task_ids = [
+            task_id for task_id, td in self.tasks.items() if td.scan_id == scan_id
+        ]
+        if not scan_task_ids:
+            return
+
+        terminal_states = {TaskState.COMPLETED, TaskState.FAILED, TaskState.BLOCKED}
+        if not all(
+            self.runtime.get(task_id)
+            and self.runtime[task_id].state in terminal_states
+            for task_id in scan_task_ids
+        ):
+            return
+
+        removed = set(scan_task_ids)
+
+        # Drop stale queue entries for this scan.
+        self.queue._heap = [entry for entry in self.queue._heap if entry[2] not in removed]
+        heapq.heapify(self.queue._heap)
+
+        # Remove runtime/task descriptors/dependency edges.
+        for task_id in removed:
+            self.runtime.pop(task_id, None)
+            self.tasks.pop(task_id, None)
+            self._dependents.pop(task_id, None)
+            self.parents.pop(task_id, None)
+            self.children.pop(task_id, None)
+
+        # Remove any references from remaining dependency sets.
+        for deps in self._dependents.values():
+            deps.difference_update(removed)
+        for deps in self.parents.values():
+            deps.difference_update(removed)
+        for deps in self.children.values():
+            deps.difference_update(removed)
+
+        self._dags.pop(scan_id, None)
+        self._dag_states.pop(scan_id, None)
+
+        self.metrics.set_gauge("ready_queue_size", len(self.queue))
+        self.metrics.set_gauge("in_flight_tasks", len(self.in_flight))
+
+        logger.info(
+            "Scheduler runtime cleaned for completed scan | scan_id=%s | tasks_removed=%d",
+            scan_id,
+            len(removed),
+        )
                 
     
     #dummy test

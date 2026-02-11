@@ -43,6 +43,33 @@ async def start_scan(
         or targets.get("source_code_path")
     )
 
+    scheduler = get_scheduler()
+    submitter = ScanSubmitter(scheduler)
+
+    scan_request = {
+        "scan_id": str(scan_id),
+        "profile": scan_in.profile,
+        "targets": targets,
+        "auth_cookie": scan_in.auth_cookie,
+        "enable_ai": scan_in.enable_ai,
+    }
+
+    try:
+        submitter.validate_scan_request(scan_request)
+    except ScanSubmissionError as exc:
+        logger.warning(
+            "Scan validation rejected | user_id=%s | reason=%s",
+            current_user.id,
+            exc.public_message,
+        )
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail={
+                "message": exc.public_message,
+                "code": exc.code,
+            },
+        )
+
     scan = Scan(
         id=scan_id,
         target=display_target,
@@ -55,26 +82,34 @@ async def start_scan(
     await db.commit()
     await db.refresh(scan)
 
-    scheduler = get_scheduler()
-    submitter = ScanSubmitter(scheduler)
-
     try:
-        submitter.submit_scan(
-            {
-                "scan_id": str(scan.id),
-                "profile": scan_in.profile,
-                "targets": targets,
-                "auth_cookie": scan_in.auth_cookie,
-                "enable_ai": scan_in.enable_ai,
-            }
+        submitter.submit_scan(scan_request)
+    except ScanSubmissionError as exc:
+        logger.warning(
+            "Scan submission rejected | user_id=%s | code=%s | reason=%s",
+            current_user.id,
+            exc.code,
+            exc.public_message,
         )
-    except Exception as exc:
+        scan.status = "FAILED"
+        await db.commit()
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail={
+                "message": exc.public_message,
+                "code": exc.code,
+            },
+        )
+    except Exception:
         logger.exception("Scan submission failed")
         scan.status = "FAILED"
         await db.commit()
         raise HTTPException(
             status_code=500,
-            detail=str(exc),
+            detail={
+                "message": "Unable to queue scan right now. Please try again.",
+                "code": "SCAN_SUBMISSION_INTERNAL_ERROR",
+            },
         )
     return {
         "scan_id": str(scan.id),

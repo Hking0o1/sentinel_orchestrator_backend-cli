@@ -1,7 +1,7 @@
-from typing import Dict, Any
-import uuid
+from typing import Dict, Any, Optional
 import json
 from pathlib import Path
+from urllib.parse import urlparse
 from config.settings import settings
 import logging
 from engine.planner.dag_builder import build_scan_dag
@@ -11,6 +11,19 @@ from app.models.scan import ScanProfile
 logger = logging.getLogger(__name__)
 class ScanSubmissionError(Exception):
     """Raised when a scan cannot be submitted."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        public_message: Optional[str] = None,
+        status_code: int = 400,
+        code: str = "SCAN_SUBMISSION_FAILED",
+    ):
+        super().__init__(message)
+        self.public_message = public_message or message
+        self.status_code = status_code
+        self.code = code
 
 
 class ScanSubmitter:
@@ -61,6 +74,20 @@ class ScanSubmitter:
             json.dump(meta, f, indent=2)
 
 
+    def validate_scan_request(self, scan_request: dict) -> dict:
+        """
+        Validate and normalize incoming request without side effects.
+        """
+        try:
+            return self._normalize_request(scan_request)
+        except ValueError as exc:
+            raise ScanSubmissionError(
+                str(exc),
+                public_message=str(exc),
+                status_code=400,
+                code="INVALID_SCAN_REQUEST",
+            ) from exc
+
     
     def submit_scan(self, scan_request: dict) -> None:
         try:
@@ -69,7 +96,7 @@ class ScanSubmitter:
                 raise ValueError("scan_request missing scan_id")
 
             scan_id = str(scan_id)
-            normalized = self._normalize_request(scan_request)
+            normalized = self.validate_scan_request(scan_request)
             self._write_scan_meta(scan_id, normalized)
             normalized["scan_id"] = scan_id
             dag = build_scan_dag(normalized)
@@ -80,8 +107,39 @@ class ScanSubmitter:
                 [t.task_id for t in dag],
             )
 
+        except ScanSubmissionError:
+            raise
+        except ValueError as exc:
+            raise ScanSubmissionError(
+                str(exc),
+                public_message=str(exc),
+                status_code=400,
+                code="INVALID_SCAN_REQUEST",
+            ) from exc
         except Exception as exc:
-            raise ScanSubmissionError(str(exc)) from exc
+            logger.exception("Unexpected scan submission failure")
+            raise ScanSubmissionError(
+                "Unexpected scan submission failure",
+                public_message="Unable to queue scan right now. Please try again.",
+                status_code=500,
+                code="SCAN_SUBMISSION_INTERNAL_ERROR",
+            ) from exc
+
+    @staticmethod
+    def _validate_target_url(target_url: str) -> str:
+        parsed = urlparse(str(target_url).strip())
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("target_url must be a valid http/https URL")
+        return str(target_url).strip()
+
+    @staticmethod
+    def _validate_source_path(src_path: str) -> str:
+        resolved = Path(str(src_path)).expanduser().resolve()
+        if not resolved.exists():
+            raise ValueError(f"source_code_path does not exist: {resolved}")
+        if not resolved.is_dir():
+            raise ValueError(f"source_code_path must be a directory: {resolved}")
+        return str(resolved)
 
     def _normalize_request(self, scan_request: dict) -> dict:
         normalized: dict = {}
@@ -112,7 +170,7 @@ class ScanSubmitter:
             if not target_url:
                 raise ValueError("web scan requires target_url")
 
-            targets["target_url"] = target_url
+            targets["target_url"] = self._validate_target_url(target_url)
 
         elif profile == "FULL":
             target_url = (
@@ -130,8 +188,8 @@ class ScanSubmitter:
             if not src_path:
                 raise ValueError("full scan requires source path")
 
-            targets["target_url"] = target_url
-            targets["source_code_path"] = src_path
+            targets["target_url"] = self._validate_target_url(target_url)
+            targets["source_code_path"] = self._validate_source_path(src_path)
 
         else:
             src_path = (
@@ -143,7 +201,7 @@ class ScanSubmitter:
             if not src_path:
                 raise ValueError("non-web scan requires source path")
 
-            targets["source_code_path"] = src_path
+            targets["source_code_path"] = self._validate_source_path(src_path)
 
         normalized["targets"] = targets
 

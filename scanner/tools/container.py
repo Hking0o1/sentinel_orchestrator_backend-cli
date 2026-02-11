@@ -1,5 +1,6 @@
 import os
 import json
+from pathlib import Path
 from typing import Dict, Any, List
 from .utils import (
     run_subprocess, 
@@ -15,11 +16,72 @@ from scanner.tools.registry import register_tool
 # --- Setup Logger ---
 log = get_logger("scanner.tools.container")
 
+
+def _looks_like_container_repo(src_path: str) -> bool:
+    """
+    Fast heuristic gate to avoid long Trivy runs on repos with no
+    container/k8s artifacts.
+    """
+    docker_markers = {
+        "dockerfile",
+        "docker-compose.yml",
+        "docker-compose.yaml",
+        "compose.yml",
+        "compose.yaml",
+        "helmfile.yaml",
+        "chart.yaml",
+        "kustomization.yaml",
+    }
+    k8s_name_hints = (
+        "deployment",
+        "statefulset",
+        "daemonset",
+        "service",
+        "ingress",
+        "pod",
+        "k8s",
+        "kube",
+        "helm",
+    )
+
+    root = Path(src_path)
+    if not root.exists() or not root.is_dir():
+        return False
+
+    for current_root, dirs, files in os.walk(root):
+        dirs[:] = [d for d in dirs if d not in SCAN_EXCLUDE_DIRS]
+        for filename in files:
+            lower = filename.lower()
+            if lower in docker_markers:
+                return True
+            if lower.startswith("dockerfile"):
+                return True
+            if lower.endswith((".yaml", ".yml", ".json")) and any(
+                hint in lower for hint in k8s_name_hints
+            ):
+                return True
+
+    return False
+
+
 def run_container_scan(src_path: str, output_dir: str) -> Dict[str, Any]:
     """
     Runs Trivy to find misconfigurations (IaC) and hardcoded secrets.
     """
     log.info(f"Starting Trivy scan on: {src_path}")
+
+    if not src_path or not os.path.isdir(src_path):
+        return {
+            "findings": [],
+            "raw_report": ("CONTAINER_Trivy", "Skipped: invalid source path."),
+        }
+
+    if not _looks_like_container_repo(src_path):
+        log.info("Skipping Trivy: no container/k8s files detected")
+        return {
+            "findings": [],
+            "raw_report": ("CONTAINER_Trivy", "Skipped: no container/k8s files detected."),
+        }
     
     if not is_tool_installed("trivy"):
         log.error("Tool 'trivy' not found in PATH.")

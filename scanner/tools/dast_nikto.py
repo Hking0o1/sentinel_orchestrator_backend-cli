@@ -1,4 +1,5 @@
 import os
+import re
 from typing import Dict, Any, Optional
 from .utils import (
     run_subprocess, is_tool_installed, normalize_severity, 
@@ -26,11 +27,25 @@ def run_nikto_scan(target_url: Optional[str], output_dir: str) -> Dict[str, Any]
         "-o", output_file, "-Format", "txt",
         "-Tuning", "x", "3", "5" # Exclude DoS and noisy checks
     ]
-    
-    if target_url.startswith("https"):
-        cmd.append("-ssl")
 
     success, output = run_subprocess(cmd, timeout=SHORT_CMD_TIMEOUT)
+
+    if (
+        not success
+        and output
+        and re.search(r"tls/ssl support .*not available", output, re.IGNORECASE)
+    ):
+        log.warning(
+            "Nikto TLS support missing; skipping HTTPS-specific scan. "
+            "Install Nikto SSL dependencies (e.g. Net::SSLeay/IO::Socket::SSL)."
+        )
+        return {
+            "findings": [],
+            "raw_report": (
+                "DAST_Nikto",
+                "Skipped: Nikto TLS/SSL support not available in this environment.",
+            ),
+        }
     
     findings = []
     if os.path.exists(output_file):

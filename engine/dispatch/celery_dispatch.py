@@ -60,6 +60,7 @@ class CeleryDispatcher:
             "SAST",
             "SCA",
             "IAC",
+            "CONTAINER",
             "DAST_ZAP",
             "DAST_NIKTO",
             "DAST_SQLMAP",

@@ -13,12 +13,14 @@ class ToolRunnerAdapter:
         *,
         target_url: str | None = None,
         src_path: str | None = None,
+        auth_cookie: str | None = None,
         output_dir: str,
         **_,
     ) -> Dict[str, Any]:
         return self.run(
             target_url=target_url,
             src_path=src_path,
+            auth_cookie=auth_cookie,
             output_dir=output_dir,
         )
 
@@ -27,6 +29,7 @@ class ToolRunnerAdapter:
         *,
         target_url: str | None = None,
         src_path: str | None = None,
+        auth_cookie: str | None = None,
         output_dir: str,
     ) -> Dict[str, Any]:
         call_kwargs = {"output_dir": output_dir}
@@ -44,6 +47,9 @@ class ToolRunnerAdapter:
             raise RuntimeError(
                 f"{self.runner.__name__} requires target_url or src_path"
             )
+
+        if "auth_cookie" in self._params and auth_cookie is not None:
+            call_kwargs["auth_cookie"] = auth_cookie
 
         try:
             logger.info(

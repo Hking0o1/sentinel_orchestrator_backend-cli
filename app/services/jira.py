@@ -1,5 +1,8 @@
 import logging
-from jira import JIRA
+try:
+    from jira import JIRA
+except Exception:  # pragma: no cover - optional dependency
+    JIRA = None
 from config.settings import settings
 from typing import List, Dict, Any
 
@@ -9,6 +12,10 @@ class JiraService:
     def __init__(self):
         self.client = None
         self.enabled = False
+
+        if JIRA is None:
+            logger.warning("jira package not installed. Jira integration disabled.")
+            return
         
         # Only initialize if ALL credentials are present
         if settings.JIRA_SERVER and settings.JIRA_USERNAME and settings.JIRA_API_TOKEN:
@@ -30,6 +37,9 @@ class JiraService:
         Returns the number of tickets created.
         """
         if not self.enabled or not self.client:
+            return 0
+        if not settings.JIRA_PROJECT_KEY:
+            logger.warning("JIRA_PROJECT_KEY is not configured. Ticket creation skipped.")
             return 0
 
         created_count = 0

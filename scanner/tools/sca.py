@@ -16,6 +16,12 @@ def run_sca_scan(src_path: str, output_dir: str) -> Dict[str, Any]:
     Runs OWASP Dependency-Check.
     """
     log.info(f"Starting Dependency-Check scan on: {src_path}")
+
+    if not src_path or not os.path.isdir(src_path):
+        return {
+            "findings": [],
+            "raw_report": ("SCA_DependencyCheck", "Skipped: invalid source path."),
+        }
     
     if not is_tool_installed("dependency-check"):
         log.error("Tool 'dependency-check' not found in PATH")

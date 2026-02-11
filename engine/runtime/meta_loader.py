@@ -2,8 +2,9 @@ import json
 from pathlib import Path
 from engine.runtime.scan_context import ExecutionScanContext
 from app.models.scan import ScanProfile
+from config.settings import settings
 
-SCAN_ROOT = Path("/app/scan_results")
+SCAN_ROOT = Path(settings.SCAN_RESULTS_DIR)
 
 
 def load_execution_context(scan_id: str) -> ExecutionScanContext:

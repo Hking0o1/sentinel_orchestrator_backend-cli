@@ -2,6 +2,7 @@ import argparse
 import json
 import os
 import sys
+from uuid import uuid4
 from pathlib import Path
 
 import requests
@@ -37,6 +38,27 @@ def print_header() -> None:
 
 def print_success(message: str) -> None:
     console.print(f"[bold green]Success:[/bold green] {message}")
+
+def print_error(message: str) -> None:
+    console.print(f"[bold red]Error:[/bold red] {message}")
+
+def _debug_enabled() -> bool:
+    return os.environ.get("SENTINEL_CLI_DEBUG", "0") == "1"
+
+def _extract_error_message(response: requests.Response) -> str:
+    try:
+        payload = response.json()
+    except Exception:
+        return response.text.strip() or f"HTTP {response.status_code}"
+
+    detail = payload.get("detail")
+    if isinstance(detail, dict):
+        code = detail.get("code")
+        message = detail.get("message") or "Request failed"
+        return f"{message} ({code})" if code else message
+    if isinstance(detail, str):
+        return detail
+    return payload.get("message") or f"HTTP {response.status_code}"
 
 
 def scan_command_help() -> str:
@@ -108,8 +130,9 @@ def handle_start_scan(token: str | None, args) -> None:
     if args.src:
         scan_request["source_code_path"] = args.src
 
-    console.print("[dim]Scan request payload:[/dim]")
-    console.print(json.dumps(scan_request, indent=2))
+    if _debug_enabled():
+        console.print("[dim]Scan request payload:[/dim]")
+        console.print(json.dumps(scan_request, indent=2))
 
     # Local mode only when auth token is not available
     if not token:
@@ -118,14 +141,21 @@ def handle_start_scan(token: str | None, args) -> None:
 
             scheduler = ensure_scheduler_initialized()
             submitter = ScanSubmitter(scheduler)
+            scan_request["scan_id"] = str(uuid4())
 
             with console.status("[bold yellow]Submitting scan to local engine...", spinner="earth"):
                 submitter.submit_scan(scan_request)
 
             print_success("Scan accepted by local engine!")
             return
+        except ScanSubmissionError as exc:
+            print_error(exc.public_message)
+            return
         except Exception as exc:
-            console.print(f"[dim]Local engine unavailable ({exc}), falling back to API...[/dim]")
+            if _debug_enabled():
+                console.print(f"[dim]Local engine unavailable ({exc}), falling back to API...[/dim]")
+            else:
+                console.print("[dim]Local engine unavailable, falling back to API...[/dim]")
 
     scan_url = f"{BACKEND_API_URL}/api/v1/scans/start"
     headers = {
@@ -144,13 +174,20 @@ def handle_start_scan(token: str | None, args) -> None:
     if args.cookie:
         payload["auth_cookie"] = args.cookie
 
-    console.print("[dim]API payload:[/dim]")
-    console.print(json.dumps(payload, indent=2))
+    if _debug_enabled():
+        console.print("[dim]API payload:[/dim]")
+        console.print(json.dumps(payload, indent=2))
 
-    with console.status("[bold yellow]Launching scan via API...", spinner="earth"):
-        response = requests.post(scan_url, headers=headers, json=payload, timeout=30)
-        response.raise_for_status()
+    try:
+        with console.status("[bold yellow]Launching scan via API...", spinner="earth"):
+            response = requests.post(scan_url, headers=headers, json=payload, timeout=30)
+        if response.status_code >= 400:
+            print_error(_extract_error_message(response))
+            return
         data = response.json()
+    except requests.RequestException as exc:
+        print_error(f"Unable to reach API: {exc}")
+        return
 
     print_success("Scan job accepted via API!")
     table = Table(title="Scan Details", show_header=True, header_style="bold magenta")
@@ -211,7 +248,8 @@ def main() -> None:
     args = parser.parse_args()
     token = get_auth_token(args.username, args.password)
     if not token:
-        console.print("[dim]Auth token not available (local engine mode assumed)[/dim]")
+        if _debug_enabled():
+            console.print("[dim]Auth token not available (local engine mode assumed)[/dim]")
 
     args.func(token, args)
 

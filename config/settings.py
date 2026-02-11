@@ -48,6 +48,7 @@ class Settings(BaseSettings):
     JIRA_SERVER: str | None = None
     JIRA_USERNAME: str | None = None
     JIRA_API_TOKEN: str | None = None
+    JIRA_PROJECT_KEY: str | None = None
 
     NOTIFICATION_WEBHOOK_URL: Optional[str] = None
     

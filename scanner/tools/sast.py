@@ -36,6 +36,12 @@ def run_sast_scan(src_path: str, output_dir: str) -> Dict[str, Any]:
     Runs Semgrep (installed via pipx) to find security flaws.
     """
     log.info(f"Starting Semgrep scan on: {src_path}")
+
+    if not src_path or not os.path.isdir(src_path):
+        return {
+            "findings": [],
+            "raw_report": ("SAST_Semgrep", "Skipped: invalid source path."),
+        }
     
     # Determine semgrep executable path
     semgrep_exec = "semgrep"

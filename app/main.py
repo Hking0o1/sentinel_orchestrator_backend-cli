@@ -9,6 +9,8 @@ from config.settings import settings
 from app.db.session import engine, AsyncSessionLocal
 from app.db.base import Base
 from app.db import crud
+from app.db import models as db_models  # noqa: F401
+from app.models import scan as scan_models  # noqa: F401
 from app.models.user import UserCreate
 from engine.scheduler.runtime import (
     acquire_scheduler_process_lock,
@@ -71,28 +73,28 @@ async def lifespan(app: FastAPI):
     - Sentinel scheduler initialization (Phase 1.5)
     """
 
-    print("FastAPI application is starting up...")
+    logger.info("FastAPI application startup initiated")
     
 
     # -------------------------------------------------
     # 1. Initialize database schema
     # -------------------------------------------------
     async with engine.begin() as conn:
-        print("Initializing database tables...")
+        logger.info("Initializing database tables")
         await conn.run_sync(Base.metadata.create_all)
-        print("Database tables initialized.")
+        logger.info("Database tables initialized")
 
     # -------------------------------------------------
     # 2. Ensure default admin user exists
     # -------------------------------------------------
     async with AsyncSessionLocal() as db:
-        print(f"Checking for admin user: {settings.FIRST_ADMIN_EMAIL}...")
+        logger.info("Checking admin bootstrap user")
         admin_user = await crud.get_user_by_email(
             db, email=settings.FIRST_ADMIN_EMAIL
         )
 
         if not admin_user:
-            print("Admin user not found, creating new admin...")
+            logger.info("Admin user not found. Creating default admin")
             admin_in = UserCreate(
                 email=settings.FIRST_ADMIN_EMAIL,
                 password=settings.FIRST_ADMIN_PASSWORD,
@@ -101,9 +103,9 @@ async def lifespan(app: FastAPI):
                 is_admin=True,
             )
             await crud.create_user(db, user_in=admin_in)
-            print("Default admin user created successfully.")
+            logger.info("Default admin user created")
         else:
-            print("Admin user already exists.")
+            logger.info("Default admin user already exists")
 
     # -------------------------------------------------
     # 3. Initialize Sentinel scheduler (CRITICAL)
@@ -133,16 +135,16 @@ async def lifespan(app: FastAPI):
             os.getpid(),
         )
 
-    print("Startup complete.")
+    logger.info("Application startup complete")
 
     yield
     
     logger.info("Sentinel shutting down")
-    print("FastAPI application is shutting down...")
+    logger.info("FastAPI application shutdown initiated")
 
 
     await engine.dispose()
-    print("Shutdown complete.")
+    logger.info("Application shutdown complete")
 
 
 # -------------------------------------------------
