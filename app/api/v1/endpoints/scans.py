@@ -14,10 +14,38 @@ from app.db import crud
 
 from engine.services.scan_submitter import ScanSubmitter, ScanSubmissionError
 from engine.scheduler.runtime import get_scheduler
+from config.settings import settings
 import logging
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def _resolve_scan_pdf_path(scan_id: str, report_url: str | None) -> str | None:
+    candidates: list[str] = []
+    if report_url:
+        candidates.append(report_url)
+
+    scan_base = os.path.join(settings.SCAN_RESULTS_DIR, scan_id)
+    candidates.extend(
+        [
+            os.path.join(scan_base, "report", "report.pdf"),
+            os.path.join(scan_base, "Sentrion_Security_Report.pdf"),
+            os.path.join(scan_base, "Gemini_Security_Report.pdf"),
+            os.path.join(scan_base, "Report.pdf"),
+        ]
+    )
+
+    seen: set[str] = set()
+    for path in candidates:
+        normalized = os.path.normpath(path)
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        if os.path.exists(normalized):
+            return normalized
+
+    return None
 
 
 @router.post("/start", status_code=status.HTTP_202_ACCEPTED)
@@ -179,12 +207,13 @@ async def download_scan_pdf(
     if db_scan.owner_id != current_user.id and not current_user.is_admin:
         raise HTTPException(status_code=403, detail="Not authorized")
 
-    file_path = db_scan.report_url
+    file_path = _resolve_scan_pdf_path(scan_id=scan_id, report_url=db_scan.report_url)
     if not file_path:
-        raise HTTPException(status_code=404, detail="PDF report path not available for this scan.")
-
-    if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="PDF report file not found on server.")
+
+    if db_scan.report_url != file_path:
+        db_scan.report_url = file_path
+        await db.commit()
 
     return FileResponse(
         path=file_path,
