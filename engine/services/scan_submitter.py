@@ -5,7 +5,8 @@ from urllib.parse import urlparse
 import os
 from config.settings import settings
 import logging
-from engine.planner.dag_builder import build_scan_dag
+from engine.planner.dag_builder import build_scan_dag, dag_shape_signature
+from engine.planner.identity import build_target_identity
 from engine.scheduler.scheduler import ScanScheduler
 from app.models.scan import ScanProfile
 
@@ -55,14 +56,11 @@ class ScanSubmitter:
         self._meta_dir.mkdir(parents=True, exist_ok=True)
         
         
-    def _write_scan_meta(self, scan_id: str, normalized: dict) -> None:
+    def _write_scan_meta(self, scan_id: str, normalized: dict, *, dag_signature: str) -> None:
         scan_dir = self._meta_dir / scan_id
         scan_dir.mkdir(parents=True, exist_ok=True)
 
         meta_path = scan_dir / "meta.json"
-        if meta_path.exists():
-            return
-
         profile = normalized["profile"]
         if isinstance(profile, ScanProfile):
             profile_value = profile.value
@@ -73,8 +71,10 @@ class ScanSubmitter:
             "scan_id": scan_id,
             "profile": profile_value,     
             "targets": normalized["targets"],
+            "target_identity": normalized.get("target_identity", {}),
             "auth_cookie": normalized.get("auth_cookie"),
             "enable_ai": normalized.get("enable_ai", False),
+            "dag_shape_signature": dag_signature,
         }
 
         with open(meta_path, "w", encoding="utf-8") as f:
@@ -104,9 +104,13 @@ class ScanSubmitter:
 
             scan_id = str(scan_id)
             normalized = self.validate_scan_request(scan_request)
-            self._write_scan_meta(scan_id, normalized)
             normalized["scan_id"] = scan_id
             dag = build_scan_dag(normalized)
+            self._write_scan_meta(
+                scan_id,
+                normalized,
+                dag_signature=dag_shape_signature(dag),
+            )
             self._scheduler.register_scan_dag(scan_id, dag)
             logger.info(
                 "ScanSubmitter: scan_id=%s | tasks=%s",
@@ -203,6 +207,9 @@ class ScanSubmitter:
                 raise ValueError("web scan requires target_url")
 
             targets["target_url"] = self._validate_target_url(target_url)
+            normalized["target_identity"] = {
+                "target_url": build_target_identity("url", targets["target_url"])
+            }
 
         elif profile == "FULL":
             target_url = (
@@ -222,6 +229,10 @@ class ScanSubmitter:
 
             targets["target_url"] = self._validate_target_url(target_url)
             targets["source_code_path"] = self._validate_source_path(src_path)
+            normalized["target_identity"] = {
+                "target_url": build_target_identity("url", targets["target_url"]),
+                "source_code_path": build_target_identity("repo", targets["source_code_path"]),
+            }
 
         else:
             src_path = (
@@ -234,6 +245,9 @@ class ScanSubmitter:
                 raise ValueError("non-web scan requires source path")
 
             targets["source_code_path"] = self._validate_source_path(src_path)
+            normalized["target_identity"] = {
+                "source_code_path": build_target_identity("repo", targets["source_code_path"])
+            }
 
         normalized["targets"] = targets
 

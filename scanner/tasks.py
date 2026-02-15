@@ -10,8 +10,8 @@ from scanner.ai.chunker import chunk_findings_jsonl
 from scanner.ai.state import load_progress, save_progress
 from scanner.ai.summarizer import summarize_chunk
 from scanner.ai.provider import build_provider
-from scanner.ai.attack_path import generate_attack_path_analysis
-from scanner.ai.exceptions import AISummarizationError
+from scanner.ai.attack_path import build_fallback_attack_path_text, generate_attack_path_analysis
+from scanner.ai.exceptions import AIAttackPathError, AISummarizationError
 from engine.dispatch.callbacks import notify_task_success, notify_task_failure
 from scanner.tools.registry import get_tool
 from scanner.correlation.disk_correlator import correlate_from_disk
@@ -449,6 +449,26 @@ def run_attack_path_task(
             },
             findings_path=attack_path,
         )
+    except AIAttackPathError:
+        logger.exception("Attack path provider failed, writing deterministic fallback")
+        try:
+            fallback = build_fallback_attack_path_text(
+                findings_path=findings_path,
+                target_url=target_url,
+            )
+            Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+            Path(output_path).write_text(fallback, encoding="utf-8")
+            notify_task_success(
+                task_id=task_id,
+                output_summary={
+                    "task_type": "ATTACK_PATH",
+                    "artifact_count": 1,
+                    "fallback_used": True,
+                },
+                findings_path=output_path,
+            )
+        except Exception as fallback_exc:
+            notify_task_failure(task_id=task_id, error=str(fallback_exc))
     except Exception as exc:
         notify_task_failure(task_id=task_id, error=str(exc))
 

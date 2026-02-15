@@ -1,6 +1,8 @@
 from uuid import uuid4
-from typing import Dict, List
+from typing import Dict, List, Any
 import os
+import json
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import FileResponse
@@ -46,6 +48,33 @@ def _resolve_scan_pdf_path(scan_id: str, report_url: str | None) -> str | None:
             return normalized
 
     return None
+
+
+def _scan_base_dir(scan_id: str) -> Path:
+    return Path(settings.SCAN_RESULTS_DIR) / scan_id
+
+
+def _read_jsonl_tail(path: Path, limit: int) -> list[dict[str, Any]]:
+    if limit <= 0:
+        return []
+    if not path.exists():
+        return []
+
+    items: list[dict[str, Any]] = []
+    with path.open("r", encoding="utf-8") as f:
+        for line in f:
+            raw = line.strip()
+            if not raw:
+                continue
+            try:
+                parsed = json.loads(raw)
+                if isinstance(parsed, dict):
+                    items.append(parsed)
+            except Exception:
+                continue
+    if len(items) <= limit:
+        return items
+    return items[-limit:]
 
 
 @router.post("/start", status_code=status.HTTP_202_ACCEPTED)
@@ -243,4 +272,126 @@ async def get_all_vulnerabilities(
     sev_order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3, "INFO": 4}
     all_findings.sort(key=lambda x: sev_order.get(x.get("severity", "INFO"), 5))
     return all_findings[:limit]
+
+
+@router.get("/{scan_id}/observability")
+async def get_scan_observability_overview(
+    scan_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
+):
+    db_scan = await crud.get_scan_job(db, job_id=scan_id)
+    if not db_scan:
+        raise HTTPException(status_code=404, detail="Scan not found")
+    if db_scan.owner_id != current_user.id and not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    base = _scan_base_dir(scan_id)
+    events_path = base / "scheduler_events.jsonl"
+    alerts_path = base / "alerts.jsonl"
+    timeline_path = base / "timeline.json"
+
+    events_tail = _read_jsonl_tail(events_path, 10)
+    alerts_tail = _read_jsonl_tail(alerts_path, 10)
+
+    timeline = None
+    if timeline_path.exists():
+        try:
+            timeline = json.loads(timeline_path.read_text(encoding="utf-8"))
+        except Exception:
+            timeline = None
+
+    return {
+        "scan_id": scan_id,
+        "status": db_scan.status,
+        "files": {
+            "scheduler_events": str(events_path),
+            "alerts": str(alerts_path),
+            "timeline": str(timeline_path),
+        },
+        "counts": {
+            "events_tail_count": len(events_tail),
+            "alerts_tail_count": len(alerts_tail),
+            "timeline_task_count": len((timeline or {}).get("tasks", {})),
+        },
+        "latest_events": events_tail,
+        "latest_alerts": alerts_tail,
+        "timeline_available": timeline is not None,
+    }
+
+
+@router.get("/{scan_id}/observability/events")
+async def get_scan_scheduler_events(
+    scan_id: str,
+    limit: int = 200,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
+):
+    db_scan = await crud.get_scan_job(db, job_id=scan_id)
+    if not db_scan:
+        raise HTTPException(status_code=404, detail="Scan not found")
+    if db_scan.owner_id != current_user.id and not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    safe_limit = max(1, min(limit, 2000))
+    path = _scan_base_dir(scan_id) / "scheduler_events.jsonl"
+    items = _read_jsonl_tail(path, safe_limit)
+    return {
+        "scan_id": scan_id,
+        "count": len(items),
+        "items": items,
+    }
+
+
+@router.get("/{scan_id}/observability/alerts")
+async def get_scan_scheduler_alerts(
+    scan_id: str,
+    limit: int = 200,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
+):
+    db_scan = await crud.get_scan_job(db, job_id=scan_id)
+    if not db_scan:
+        raise HTTPException(status_code=404, detail="Scan not found")
+    if db_scan.owner_id != current_user.id and not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    safe_limit = max(1, min(limit, 2000))
+    path = _scan_base_dir(scan_id) / "alerts.jsonl"
+    items = _read_jsonl_tail(path, safe_limit)
+    return {
+        "scan_id": scan_id,
+        "count": len(items),
+        "items": items,
+    }
+
+
+@router.get("/{scan_id}/observability/timeline")
+async def get_scan_scheduler_timeline(
+    scan_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
+):
+    db_scan = await crud.get_scan_job(db, job_id=scan_id)
+    if not db_scan:
+        raise HTTPException(status_code=404, detail="Scan not found")
+    if db_scan.owner_id != current_user.id and not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    path = _scan_base_dir(scan_id) / "timeline.json"
+    if not path.exists():
+        return {"scan_id": scan_id, "available": False, "timeline": None}
+
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        raise HTTPException(status_code=500, detail="Timeline file is malformed")
+
+    return {
+        "scan_id": scan_id,
+        "available": True,
+        "timeline": payload,
+    }
+
+
 

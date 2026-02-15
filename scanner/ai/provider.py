@@ -35,10 +35,16 @@ class GeminiProvider(AIProvider):
         self.timeout_sec = timeout_sec
         if genai is None:
             raise AIProviderError(
-                "google-generativeai is not installed; install it to use Gemini provider"
+                "google-generativeai is not installed; install it to use Gemini provider",
+                provider="gemini",
+                retryable=False,
             )
         if not settings.GEMINI_API_KEY:
-            raise AIProviderError("GEMINI_API_KEY is not configured")
+            raise AIProviderError(
+                "GEMINI_API_KEY is not configured",
+                provider="gemini",
+                retryable=False,
+            )
         genai.configure(api_key=settings.GEMINI_API_KEY)
         self.client = genai.GenerativeModel(self.model_name)
 
@@ -53,11 +59,11 @@ class GeminiProvider(AIProvider):
             response = self.client.generate_content(prompt)
 
             if time.time() - start > self.timeout_sec:
-                raise AITimeoutError("Gemini request timed out")
+                raise AITimeoutError("Gemini request timed out", provider="gemini")
 
             text = getattr(response, "text", None)
             if not text:
-                raise AIProviderError("Gemini returned empty response")
+                raise AIProviderError("Gemini returned empty response", provider="gemini")
             return text
 
         except AITokenLimitError:
@@ -65,7 +71,7 @@ class GeminiProvider(AIProvider):
         except AITimeoutError:
             raise
         except Exception as exc:
-            raise AIProviderError(str(exc)) from exc
+            raise AIProviderError(str(exc), provider="gemini") from exc
 
     def _build_prompt(self, findings: List[Dict]) -> str:
         lines = []
@@ -132,14 +138,14 @@ class OllamaProvider(AIProvider):
             data = resp.json()
             text = data.get("response", "").strip()
             if not text:
-                raise AIProviderError("Ollama returned empty response")
+                raise AIProviderError("Ollama returned empty response", provider="ollama")
             return text
         except requests.Timeout as exc:
-            raise AITimeoutError("Ollama request timed out") from exc
+            raise AITimeoutError("Ollama request timed out", provider="ollama") from exc
         except requests.HTTPError as exc:
-            raise AIProviderError(f"Ollama HTTP error: {exc}") from exc
+            raise AIProviderError(f"Ollama HTTP error: {exc}", provider="ollama") from exc
         except Exception as exc:
-            raise AIProviderError(str(exc)) from exc
+            raise AIProviderError(str(exc), provider="ollama") from exc
 
     def _build_prompt(self, findings: List[Dict]) -> str:
         lines = []

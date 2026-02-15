@@ -1,5 +1,7 @@
 from typing import List, Dict, Set, FrozenSet
 from uuid import uuid4
+import hashlib
+import json
 import logging
 from engine.scheduler.dag import TaskDescriptor
 from engine.planner.cost_model import get_cost_tier, get_cost_units
@@ -87,6 +89,29 @@ def build_scan_dag(scan_request: Dict) -> List[TaskDescriptor]:
     tasks.append(report_task)
 
     return tasks
+
+
+def dag_shape_signature(tasks: List[TaskDescriptor]) -> str:
+    """
+    Build a deterministic DAG shape signature independent of scan_id/task_id.
+    """
+    tasks_by_id = {t.task_id: t for t in tasks}
+    nodes = []
+    for task in tasks:
+        dep_types = sorted(
+            tasks_by_id[d].task_type for d in task.dependencies if d in tasks_by_id
+        )
+        nodes.append(
+            {
+                "task_type": task.task_type,
+                "cost_units": task.cost_units,
+                "retries_allowed": task.retries_allowed,
+                "depends_on_task_types": dep_types,
+            }
+        )
+    nodes.sort(key=lambda n: (n["task_type"], n["cost_units"], ",".join(n["depends_on_task_types"])))
+    payload = json.dumps(nodes, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def _build_tool_tasks(scan_id: str, profile: str) -> List[TaskDescriptor]:

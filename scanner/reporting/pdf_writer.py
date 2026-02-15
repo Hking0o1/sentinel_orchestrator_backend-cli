@@ -1,10 +1,86 @@
+import json
 from pathlib import Path
 from typing import Optional
 
+from reportlab.lib.enums import TA_LEFT
 from reportlab.lib.pagesizes import A4
-from reportlab.pdfgen import canvas
+from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.platypus import ListFlowable, ListItem, Paragraph, SimpleDocTemplate, Spacer
 
-from scanner.reporting.exceptions import ReportIOError
+from scanner.reporting.exceptions import ReportFormatError, ReportIOError, ReportRenderError
+
+
+def _sanitize_text_for_pdf(text: str) -> str:
+    replacements = {
+        "â€¢": "-",
+        "â€“": "-",
+        "â€”": "-",
+        "â€œ": '"',
+        "â€": '"',
+        "â€˜": "'",
+        "â€™": "'",
+        "â€¦": "...",
+    }
+    clean = text
+    for char, replacement in replacements.items():
+        clean = clean.replace(char, replacement)
+    return clean
+
+
+def _escape_text(text: str) -> str:
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _markdown_to_flowables(markdown_text: str, styles) -> list:
+    flowables = []
+    bullets: list[str] = []
+
+    def flush_bullets() -> None:
+        nonlocal bullets
+        if not bullets:
+            return
+        flowables.append(
+            ListFlowable(
+                [
+                    ListItem(Paragraph(_escape_text(_sanitize_text_for_pdf(item)), styles["SentinelBody"]))
+                    for item in bullets
+                ],
+                start="bullet",
+                leftIndent=16,
+            )
+        )
+        flowables.append(Spacer(1, 4))
+        bullets = []
+
+    for raw_line in markdown_text.splitlines():
+        line = _sanitize_text_for_pdf(raw_line.strip())
+        if not line:
+            flush_bullets()
+            flowables.append(Spacer(1, 4))
+            continue
+        if line.startswith("```"):
+            continue
+        if line.startswith("- ") or line.startswith("* "):
+            bullets.append(line[2:])
+            continue
+        if line.startswith("### "):
+            flush_bullets()
+            flowables.append(Paragraph(_escape_text(line[4:]), styles["SentinelH2"]))
+            continue
+        if line.startswith("## "):
+            flush_bullets()
+            flowables.append(Paragraph(_escape_text(line[3:]), styles["SentinelH2"]))
+            continue
+        if line.startswith("# "):
+            flush_bullets()
+            flowables.append(Paragraph(_escape_text(line[2:]), styles["SentinelH1"]))
+            continue
+
+        flush_bullets()
+        flowables.append(Paragraph(_escape_text(line), styles["SentinelBody"]))
+
+    flush_bullets()
+    return flowables
 
 
 def write_pdf_report(
@@ -21,76 +97,122 @@ def write_pdf_report(
 
     For very large scans, limits findings to keep PDF usable.
     """
-
-    out = Path(output_path)
-    out.parent.mkdir(parents=True, exist_ok=True)
-
     try:
-        c = canvas.Canvas(str(out), pagesize=A4)
-        width, height = A4
-        y = height - 40
+        findings_file = Path(findings_path)
+        if not findings_file.exists():
+            raise ReportIOError("Findings file not found", path=str(findings_file))
 
-        def new_page():
-            nonlocal y
-            c.showPage()
-            y = height - 40
+        out = Path(output_path)
+        out.parent.mkdir(parents=True, exist_ok=True)
 
-        # Title
-        c.setFont("Helvetica-Bold", 14)
-        c.drawString(40, y, f"Sentinel Security Report — {scan_id}")
-        y -= 30
+        styles = getSampleStyleSheet()
+        styles.add(
+            ParagraphStyle(
+                name="SentinelH1",
+                fontSize=16,
+                leading=20,
+                spaceAfter=10,
+                spaceBefore=8,
+                fontName="Helvetica-Bold",
+            )
+        )
+        styles.add(
+            ParagraphStyle(
+                name="SentinelH2",
+                fontSize=13,
+                leading=16,
+                spaceAfter=8,
+                spaceBefore=6,
+                fontName="Helvetica-Bold",
+            )
+        )
+        styles.add(
+            ParagraphStyle(
+                name="SentinelBody",
+                fontSize=10,
+                leading=14,
+                spaceAfter=4,
+                alignment=TA_LEFT,
+            )
+        )
 
-        # AI summary (if exists)
+        doc = SimpleDocTemplate(
+            str(out),
+            pagesize=A4,
+            rightMargin=36,
+            leftMargin=36,
+            topMargin=36,
+            bottomMargin=36,
+        )
+
+        flowables = [
+            Paragraph(f"Sentinel Security Report - {scan_id}", styles["SentinelH1"]),
+            Spacer(1, 6),
+        ]
+
         if ai_summary_path:
-            c.setFont("Helvetica", 10)
-            c.drawString(40, y, "AI Summary:")
-            y -= 20
-
-            with open(ai_summary_path, "r", encoding="utf-8") as f:
-                for line in f:
-                    if y < 40:
-                        new_page()
-                    c.drawString(40, y, line.strip())
-                    y -= 14
-
-            y -= 20
+            summary_file = Path(ai_summary_path)
+            if not summary_file.exists():
+                raise ReportIOError("AI summary file not found", path=str(summary_file))
+            flowables.append(Paragraph("AI Summary", styles["SentinelH2"]))
+            flowables.extend(_markdown_to_flowables(summary_file.read_text(encoding="utf-8"), styles))
 
         if attack_path_path:
-            c.setFont("Helvetica", 10)
-            c.drawString(40, y, "Attack Path Analysis:")
-            y -= 20
+            attack_file = Path(attack_path_path)
+            if not attack_file.exists():
+                raise ReportIOError("Attack path file not found", path=str(attack_file))
+            flowables.append(Paragraph("Attack Path Analysis", styles["SentinelH2"]))
+            flowables.extend(_markdown_to_flowables(attack_file.read_text(encoding="utf-8"), styles))
 
-            with open(attack_path_path, "r", encoding="utf-8") as f:
-                for line in f:
-                    if y < 40:
-                        new_page()
-                    c.drawString(40, y, line.strip()[:140])
-                    y -= 14
+        flowables.append(Paragraph("Findings", styles["SentinelH2"]))
 
-            y -= 20
+        finding_count = 0
+        with findings_file.open("r", encoding="utf-8") as f:
+            for line_no, line in enumerate(f, start=1):
+                raw = line.strip()
+                if not raw:
+                    continue
+                try:
+                    finding = json.loads(raw)
+                except json.JSONDecodeError as exc:
+                    raise ReportFormatError(
+                        "Invalid JSON finding line",
+                        path=findings_path,
+                        line_no=line_no,
+                    ) from exc
+                if not isinstance(finding, dict):
+                    raise ReportFormatError(
+                        "Finding entry must be a JSON object",
+                        path=findings_path,
+                        line_no=line_no,
+                    )
 
-        # Findings (bounded)
-        c.setFont("Helvetica", 9)
-        c.drawString(40, y, "Findings:")
-        y -= 20
-
-        count = 0
-        with open(findings_path, "r", encoding="utf-8") as f:
-            for line in f:
-                if count >= max_findings:
-                    c.drawString(40, y, "... output truncated ...")
+                if finding_count >= max_findings:
+                    flowables.append(Paragraph("... output truncated ...", styles["SentinelBody"]))
                     break
 
-                if y < 40:
-                    new_page()
+                severity = str(finding.get("severity", "INFO")).upper()
+                title = str(finding.get("title", "Unnamed issue"))
+                tool = str(finding.get("tool_source") or finding.get("tool") or "unknown")
+                location = (
+                    (finding.get("code_location") or {}).get("file_path")
+                    or (finding.get("endpoint_location") or {}).get("url")
+                    or "n/a"
+                )
+                desc = str(finding.get("description") or finding.get("details") or "").strip()
+                snippet = _escape_text(_sanitize_text_for_pdf(desc[:400]))
 
-                c.drawString(40, y, line.strip()[:120])
-                y -= 12
-                count += 1
+                text = (
+                    f"[{severity}] {_escape_text(title)}<br/>"
+                    f"Tool: {_escape_text(tool)} | Location: {_escape_text(str(location))}<br/>"
+                    f"{snippet if snippet else 'No details provided.'}"
+                )
+                flowables.append(Paragraph(text, styles["SentinelBody"]))
+                finding_count += 1
 
-        c.save()
-
+        doc.build(flowables)
+        return str(out)
+    except (ReportIOError, ReportFormatError, ReportRenderError):
+        raise
     except Exception as exc:
-        raise ReportIOError(str(exc)) from exc
-
-    return str(out)
+        raise ReportRenderError(str(exc), path=output_path) from exc

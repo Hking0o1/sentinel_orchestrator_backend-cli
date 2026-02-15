@@ -4,6 +4,8 @@ from typing import Any
 
 import requests
 
+from scanner.ai.exceptions import AIAttackPathError, AIInputValidationError
+
 
 LEAK_KEYWORDS = {
     "api key",
@@ -48,23 +50,47 @@ def generate_attack_path_analysis(
     ollama_model: str,
     timeout_sec: int,
 ) -> str:
-    findings = _read_findings(findings_path)
-    context = _build_context(findings, target_url)
+    try:
+        findings = _read_findings(findings_path)
+    except Exception as exc:
+        raise AIInputValidationError(
+            "Failed to parse findings for attack path analysis",
+            details={"findings_path": findings_path},
+        ) from exc
 
-    ai_text = _query_ollama(
-        context=context,
-        base_url=ollama_base_url,
-        model=ollama_model,
-        timeout_sec=timeout_sec,
-    )
+    context = _build_context(findings, target_url)
+    ai_text: str | None = None
+
+    try:
+        ai_text = _query_ollama(
+            context=context,
+            base_url=ollama_base_url,
+            model=ollama_model,
+            timeout_sec=timeout_sec,
+        )
+    except AIAttackPathError:
+        ai_text = None
 
     if not ai_text:
         ai_text = _fallback_analysis(context)
 
     out = Path(output_path)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(ai_text, encoding="utf-8")
+    try:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(ai_text, encoding="utf-8")
+    except Exception as exc:
+        raise AIAttackPathError(
+            "Failed to persist attack path analysis",
+            retryable=False,
+        ) from exc
+
     return str(out)
+
+
+def build_fallback_attack_path_text(*, findings_path: str, target_url: str | None) -> str:
+    findings = _read_findings(findings_path)
+    context = _build_context(findings, target_url)
+    return _fallback_analysis(context)
 
 
 def _read_findings(path: str) -> list[dict[str, Any]]:
@@ -89,6 +115,7 @@ def _read_findings(path: str) -> list[dict[str, Any]]:
 
 def _build_context(findings: list[dict[str, Any]], target_url: str | None) -> dict[str, Any]:
     high_sev = [f for f in findings if str(f.get("severity", "")).upper() in {"CRITICAL", "HIGH"}]
+    medium_sev = [f for f in findings if str(f.get("severity", "")).upper() == "MEDIUM"]
 
     text_blob = " ".join(
         f"{f.get('title','')} {f.get('description','')} {f.get('tool_source','')} {f.get('tool','')} {f.get('endpoint_location',{})}"
@@ -110,6 +137,7 @@ def _build_context(findings: list[dict[str, Any]], target_url: str | None) -> di
         "target_url": target_url,
         "total_findings": len(findings),
         "high_severity_count": len(high_sev),
+        "medium_severity_count": len(medium_sev),
         "leak_signals": leak_signals,
         "crawler_surface_signals": crawler_signals,
         "dependency_signals": dependency_signals,
@@ -147,8 +175,30 @@ def _query_ollama(*, context: dict[str, Any], base_url: str, model: str, timeout
         data = resp.json()
         text = (data.get("response") or "").strip()
         return text or None
-    except Exception:
-        return None
+    except requests.Timeout as exc:
+        raise AIAttackPathError(
+            "Attack path request to Ollama timed out",
+            provider="ollama",
+            retryable=True,
+        ) from exc
+    except requests.HTTPError as exc:
+        raise AIAttackPathError(
+            f"Attack path provider returned HTTP error: {exc}",
+            provider="ollama",
+            retryable=True,
+        ) from exc
+    except requests.RequestException as exc:
+        raise AIAttackPathError(
+            f"Attack path provider request failed: {exc}",
+            provider="ollama",
+            retryable=True,
+        ) from exc
+    except Exception as exc:
+        raise AIAttackPathError(
+            f"Unexpected attack path provider error: {exc}",
+            provider="ollama",
+            retryable=True,
+        ) from exc
 
 
 def _fallback_analysis(context: dict[str, Any]) -> str:
@@ -195,6 +245,7 @@ def _fallback_analysis(context: dict[str, Any]) -> str:
         f"Target: {context.get('target_url')}\n"
         f"Total Findings: {context.get('total_findings')}\n"
         f"High/Critical Findings: {context.get('high_severity_count')}\n\n"
+        f"Medium Findings: {context.get('medium_severity_count')}\n\n"
         f"Leak Signals: {', '.join(context.get('leak_signals') or ['none'])}\n"
         f"Crawler Surface Signals: {', '.join(context.get('crawler_surface_signals') or ['none'])}\n\n"
         f"Dependency Signals: {', '.join(context.get('dependency_signals') or ['none'])}\n"

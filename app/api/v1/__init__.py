@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from app.api.v1.endpoints import auth, scans, schedules # <--- Added schedules
+from app.api.v1.endpoints import auth, internal, scans, schedules # <--- Added schedules
 
 # Create the main router for API version 1
 api_router_v1 = APIRouter()
@@ -25,3 +25,9 @@ api_router_v1.include_router(
     tags=["Scan Schedules"]
 )
 # -----------------------------------------
+
+api_router_v1.include_router(
+    internal.router,
+    prefix="/internal",
+    tags=["Internal"]
+)
