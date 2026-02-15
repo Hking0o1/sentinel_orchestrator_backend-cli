@@ -107,9 +107,9 @@ class CeleryDispatcher:
                 progress_path=str(base_dir / "ai" / "summary.progress"),
                 attack_path_path=str(base_dir / "ai" / "attack_path.txt"),
                 provider_config={
-                    "provider": settings.AI_PROVIDER,
-                    "base_url": settings.OLLAMA_BASE_URL,
-                    "model": settings.OLLAMA_MODEL,
+                    # Summary generation is always Gemini.
+                    "provider": "gemini",
+                    "model": settings.GEMINI_MODEL,
                     "timeout_sec": settings.AI_TIMEOUT_SEC,
                 },
             )

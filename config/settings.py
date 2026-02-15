@@ -38,6 +38,7 @@ class Settings(BaseSettings):
 
     # --- AI & Reporting API Keys ---
     GEMINI_API_KEY: str | None = None
+    GEMINI_MODEL: str = "gemini-2.5-flash"
     NVD_API_KEY: str | None = None # For Dependency-Check
     AI_PROVIDER: str = "ollama"
     OLLAMA_BASE_URL: str = "http://host.docker.internal:11434"
