@@ -1,6 +1,6 @@
 import uuid
 from sqlalchemy import (
-    Column, String, Boolean, DateTime, ForeignKey, Text
+    Column, String, Boolean, DateTime, ForeignKey, Text, Integer, Enum as SQLEnum, UniqueConstraint
 )
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
@@ -8,6 +8,7 @@ from sqlalchemy.sql import func
 
 from app.db.base import Base 
 from app.models.scan import ScanStatus, ScanProfile, ScanSeverity
+from app.models.security import DomainStatus, TrustTier, ActivityOutcome
 
 class User(Base):
     __tablename__ = "users"
@@ -17,10 +18,18 @@ class User(Base):
     hashed_password = Column(String, nullable=False)
     is_active = Column(Boolean(), default=True)
     is_admin = Column(Boolean(), default=False)
+    trust_tier = Column(
+        SQLEnum(TrustTier, name="trust_tier_enum"),
+        nullable=False,
+        default=TrustTier.NEW,
+        server_default=TrustTier.NEW.value,
+    )
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     
     scans = relationship("ScanJob", back_populates="owner", cascade="all, delete-orphan")
     schedules = relationship("ScanSchedule", back_populates="owner", cascade="all, delete-orphan")
+    domains = relationship("DomainOwnership", back_populates="owner", cascade="all, delete-orphan")
+    scan_activity = relationship("ScanActivity", back_populates="owner", cascade="all, delete-orphan")
 
 class ScanJob(Base):
     __tablename__ = "scan_jobs"
@@ -65,3 +74,46 @@ class ScanSchedule(Base):
     owner_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
     owner = relationship("User", back_populates="schedules")
     jobs = relationship("ScanJob", back_populates="schedule")
+
+
+class DomainOwnership(Base):
+    __tablename__ = "domains"
+    __table_args__ = (
+        UniqueConstraint("user_id", "domain", name="uq_domains_user_domain"),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
+    domain = Column(String, nullable=False, index=True)
+    verification_token = Column(String(128), nullable=False)
+    status = Column(
+        SQLEnum(DomainStatus, name="domain_status_enum"),
+        nullable=False,
+        default=DomainStatus.PENDING,
+        server_default=DomainStatus.PENDING.value,
+    )
+    failed_verification_attempts = Column(Integer, nullable=False, default=0, server_default="0")
+    verified_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    owner = relationship("User", back_populates="domains")
+
+
+class ScanActivity(Base):
+    __tablename__ = "scan_activity"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
+    domain = Column(String, nullable=True, index=True)
+    scan_type = Column(String(50), nullable=True)
+    ip_address = Column(String(64), nullable=True)
+    timestamp = Column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
+    risk_score = Column(Integer, nullable=False, default=0, server_default="0")
+    outcome = Column(
+        SQLEnum(ActivityOutcome, name="activity_outcome_enum"),
+        nullable=False,
+    )
+    reason = Column(String(200), nullable=True)
+    metadata_json = Column(JSONB, nullable=True, default={})
+
+    owner = relationship("User", back_populates="scan_activity")

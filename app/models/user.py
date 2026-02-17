@@ -3,6 +3,7 @@ from typing import Optional
 from pydantic import ConfigDict, EmailStr
 from pydantic.alias_generators import to_camel
 import uuid # We need this for the default_factory
+from app.models.security import TrustTier
 
 class UserBase(pydantic.BaseModel):
     """
@@ -12,6 +13,7 @@ class UserBase(pydantic.BaseModel):
     full_name: Optional[str] = None
     is_active: bool = True
     is_admin: bool = False
+    trust_tier: TrustTier = TrustTier.NEW
 
 class UserCreate(UserBase):
     """

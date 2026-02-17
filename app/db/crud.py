@@ -1,13 +1,17 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
+from sqlalchemy import func, and_
 from uuid import UUID
 from datetime import datetime, timezone
 from typing import Optional
-from app.db.models import User, ScanJob, ScanSchedule
+from app.db.models import User, ScanJob, ScanSchedule, DomainOwnership, ScanActivity
 from app.models.user import UserCreate
 from app.models.scan import ScanCreate, ScanJobUpdate, ScanStatus
 from app.models.schedule import ScanScheduleCreate, ScanScheduleUpdate
 from app.models.user import UserUpdate
+from app.models.security import DomainStatus, ActivityOutcome
+from engine.planner.identity import normalize_target_value
+import secrets
 
 # ... (User functions remain the same) ...
 async def get_user_by_email(db: AsyncSession, email: str) -> User | None:
@@ -143,3 +147,199 @@ async def update_user(db: AsyncSession, user_id: UUID, user_in: UserUpdate) -> U
     await db.commit()
     await db.refresh(db_user)
     return db_user
+
+
+def normalize_domain(domain_or_url: str) -> str:
+    return normalize_target_value("domain", domain_or_url)
+
+
+def build_domain_verification_value(token: str) -> str:
+    return f"sentinel-verification={token}"
+
+
+async def get_domain_record(
+    db: AsyncSession,
+    user_id: UUID,
+    domain: str,
+) -> DomainOwnership | None:
+    normalized = normalize_domain(domain)
+    result = await db.execute(
+        select(DomainOwnership).where(
+            and_(
+                DomainOwnership.user_id == user_id,
+                DomainOwnership.domain == normalized,
+            )
+        )
+    )
+    return result.scalar_one_or_none()
+
+
+async def get_user_domains(db: AsyncSession, user_id: UUID) -> list[DomainOwnership]:
+    result = await db.execute(
+        select(DomainOwnership)
+        .where(DomainOwnership.user_id == user_id)
+        .order_by(DomainOwnership.created_at.desc())
+    )
+    return result.scalars().all()
+
+
+async def create_or_refresh_domain_record(
+    db: AsyncSession,
+    user_id: UUID,
+    domain: str,
+) -> DomainOwnership:
+    normalized = normalize_domain(domain)
+    existing = await get_domain_record(db, user_id=user_id, domain=normalized)
+    token = secrets.token_hex(32)
+    if existing:
+        existing.verification_token = token
+        existing.status = DomainStatus.PENDING
+        existing.verified_at = None
+    else:
+        existing = DomainOwnership(
+            user_id=user_id,
+            domain=normalized,
+            verification_token=token,
+            status=DomainStatus.PENDING,
+        )
+        db.add(existing)
+
+    await db.commit()
+    await db.refresh(existing)
+    return existing
+
+
+async def mark_domain_verified(db: AsyncSession, record: DomainOwnership) -> DomainOwnership:
+    record.status = DomainStatus.VERIFIED
+    record.verified_at = datetime.now(timezone.utc)
+    await db.commit()
+    await db.refresh(record)
+    return record
+
+
+async def increment_domain_verification_failure(db: AsyncSession, record: DomainOwnership) -> None:
+    record.failed_verification_attempts = (record.failed_verification_attempts or 0) + 1
+    await db.commit()
+
+
+async def count_domains_added_since(db: AsyncSession, user_id: UUID, since: datetime) -> int:
+    result = await db.execute(
+        select(func.count(DomainOwnership.id)).where(
+            and_(
+                DomainOwnership.user_id == user_id,
+                DomainOwnership.created_at >= since,
+            )
+        )
+    )
+    return int(result.scalar_one() or 0)
+
+
+async def count_user_scans_since(db: AsyncSession, user_id: UUID, since: datetime) -> int:
+    result = await db.execute(
+        select(func.count(ScanJob.id)).where(
+            and_(
+                ScanJob.owner_id == user_id,
+                ScanJob.created_at >= since,
+            )
+        )
+    )
+    return int(result.scalar_one() or 0)
+
+
+async def count_user_active_scans(db: AsyncSession, user_id: UUID) -> int:
+    result = await db.execute(
+        select(func.count(ScanJob.id)).where(
+            and_(
+                ScanJob.owner_id == user_id,
+                ScanJob.status.in_([ScanStatus.PENDING, ScanStatus.RUNNING]),
+            )
+        )
+    )
+    return int(result.scalar_one() or 0)
+
+
+async def count_global_active_scans(db: AsyncSession) -> int:
+    result = await db.execute(
+        select(func.count(ScanJob.id)).where(
+            ScanJob.status.in_([ScanStatus.PENDING, ScanStatus.RUNNING])
+        )
+    )
+    return int(result.scalar_one() or 0)
+
+
+async def count_domain_deep_scans_since(
+    db: AsyncSession,
+    user_id: UUID,
+    domain: str,
+    since: datetime,
+) -> int:
+    domain = normalize_domain(domain)
+    result = await db.execute(
+        select(func.count(ScanActivity.id)).where(
+            and_(
+                ScanActivity.user_id == user_id,
+                ScanActivity.domain == domain,
+                ScanActivity.scan_type == "full",
+                ScanActivity.outcome == ActivityOutcome.ALLOWED,
+                ScanActivity.timestamp >= since,
+            )
+        )
+    )
+    return int(result.scalar_one() or 0)
+
+
+async def get_latest_activity_for_user(db: AsyncSession, user_id: UUID) -> ScanActivity | None:
+    result = await db.execute(
+        select(ScanActivity)
+        .where(ScanActivity.user_id == user_id)
+        .order_by(ScanActivity.timestamp.desc())
+        .limit(1)
+    )
+    return result.scalar_one_or_none()
+
+
+async def get_latest_domain_activity_for_user(
+    db: AsyncSession,
+    user_id: UUID,
+    domain: str,
+) -> ScanActivity | None:
+    domain = normalize_domain(domain)
+    result = await db.execute(
+        select(ScanActivity)
+        .where(
+            and_(
+                ScanActivity.user_id == user_id,
+                ScanActivity.domain == domain,
+            )
+        )
+        .order_by(ScanActivity.timestamp.desc())
+        .limit(1)
+    )
+    return result.scalar_one_or_none()
+
+
+async def create_scan_activity(
+    db: AsyncSession,
+    user_id: UUID,
+    domain: str | None,
+    scan_type: str | None,
+    ip_address: str | None,
+    risk_score: int,
+    outcome: ActivityOutcome,
+    reason: str | None = None,
+    metadata_json: dict | None = None,
+) -> ScanActivity:
+    activity = ScanActivity(
+        user_id=user_id,
+        domain=normalize_domain(domain) if domain else None,
+        scan_type=scan_type,
+        ip_address=ip_address,
+        risk_score=risk_score,
+        outcome=outcome,
+        reason=reason,
+        metadata_json=metadata_json or {},
+    )
+    db.add(activity)
+    await db.commit()
+    await db.refresh(activity)
+    return activity

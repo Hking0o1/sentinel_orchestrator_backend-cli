@@ -4,23 +4,33 @@ import os
 import json
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db_session
-from app.models.scan import ScanCreate, ScanJob, ScanJobSummary, ScanFinding, ScanStatus
+from app.models.scan import ScanCreate, ScanJob, ScanJobSummary, ScanFinding, ScanStatus, ScanProfile
+from app.models.security import ActivityOutcome, DomainStatus, TrustTier
 from app.core.security import get_current_user
 from app.models.user import User
 from app.db import crud
+from app.services.security_controls import (
+    is_abuse_guard_enabled,
+    is_domain_verification_enabled,
+    is_rate_limiting_enabled,
+)
 
 from engine.services.scan_submitter import ScanSubmitter, ScanSubmissionError
+from engine.security import AbuseDecision, AbuseGuard, RateLimiter
 from engine.scheduler.runtime import get_scheduler
 from config.settings import settings
 import logging
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+abuse_guard = AbuseGuard()
+rate_limiter = RateLimiter()
+_SHARED_PLATFORM_SUFFIXES = (".vercel.app", ".netlify.app")
 
 
 def _resolve_scan_pdf_path(scan_id: str, report_url: str | None) -> str | None:
@@ -54,6 +64,34 @@ def _scan_base_dir(scan_id: str) -> Path:
     return Path(settings.SCAN_RESULTS_DIR) / scan_id
 
 
+def _extract_client_ip(request: Request) -> str | None:
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    if request.client:
+        return request.client.host
+    return None
+
+
+def _target_domain(scan_in: ScanCreate) -> str | None:
+    if not scan_in.target_url:
+        return None
+    return crud.normalize_domain(str(scan_in.target_url))
+
+
+def _is_shared_platform_domain(domain: str) -> bool:
+    return domain.endswith(_SHARED_PLATFORM_SUFFIXES)
+
+
+def _resolve_trust_tier(raw_tier) -> TrustTier:
+    if isinstance(raw_tier, TrustTier):
+        return raw_tier
+    try:
+        return TrustTier(str(raw_tier))
+    except Exception:
+        return TrustTier.NEW
+
+
 def _read_jsonl_tail(path: Path, limit: int) -> list[dict[str, Any]]:
     if limit <= 0:
         return []
@@ -79,6 +117,7 @@ def _read_jsonl_tail(path: Path, limit: int) -> list[dict[str, Any]]:
 
 @router.post("/start", status_code=status.HTTP_202_ACCEPTED)
 async def start_scan(
+    request: Request,
     scan_in: ScanCreate,
     db: AsyncSession = Depends(get_db_session),
     current_user=Depends(get_current_user),
@@ -98,6 +137,140 @@ async def start_scan(
         )
 
     scan_id = str(uuid4())
+    target_domain = _target_domain(scan_in)
+    client_ip = _extract_client_ip(request)
+    trust_tier = _resolve_trust_tier(getattr(current_user, "trust_tier", TrustTier.NEW))
+
+    if trust_tier == TrustTier.SUSPENDED:
+        await crud.create_scan_activity(
+            db=db,
+            user_id=current_user.id,
+            domain=target_domain,
+            scan_type=scan_in.profile.value,
+            ip_address=client_ip,
+            risk_score=100,
+            outcome=ActivityOutcome.BLOCKED,
+            reason="USER_SUSPENDED",
+        )
+        raise HTTPException(status_code=403, detail="Your account is suspended from scanning.")
+
+    if scan_in.profile == ScanProfile.FULL and trust_tier != TrustTier.TRUSTED:
+        await crud.create_scan_activity(
+            db=db,
+            user_id=current_user.id,
+            domain=target_domain,
+            scan_type=scan_in.profile.value,
+            ip_address=client_ip,
+            risk_score=0,
+            outcome=ActivityOutcome.BLOCKED,
+            reason="TRUST_TIER_RESTRICTED_SCAN_DEPTH",
+        )
+        raise HTTPException(status_code=403, detail="Your trust tier does not allow full-depth scans.")
+
+    if target_domain and _is_shared_platform_domain(target_domain) and scan_in.profile == ScanProfile.FULL:
+        await crud.create_scan_activity(
+            db=db,
+            user_id=current_user.id,
+            domain=target_domain,
+            scan_type=scan_in.profile.value,
+            ip_address=client_ip,
+            risk_score=0,
+            outcome=ActivityOutcome.BLOCKED,
+            reason="SHARED_PLATFORM_DOMAIN_RESTRICTED",
+        )
+        raise HTTPException(
+            status_code=403,
+            detail="Shared platform domains are restricted to lightweight scans.",
+        )
+
+    if target_domain and is_domain_verification_enabled():
+        domain_record = await crud.get_domain_record(
+            db,
+            user_id=current_user.id,
+            domain=target_domain,
+        )
+        if not domain_record or domain_record.status != DomainStatus.VERIFIED:
+            await crud.create_scan_activity(
+                db=db,
+                user_id=current_user.id,
+                domain=target_domain,
+                scan_type=scan_in.profile.value,
+                ip_address=client_ip,
+                risk_score=0,
+                outcome=ActivityOutcome.BLOCKED,
+                reason="DOMAIN_NOT_VERIFIED",
+            )
+            raise HTTPException(
+                status_code=403,
+                detail="Domain ownership is not verified for this target.",
+            )
+
+    if is_abuse_guard_enabled():
+        abuse_decision = await abuse_guard.evaluate(
+            db=db,
+            user_id=current_user.id,
+            domain=target_domain,
+            ip_address=client_ip,
+            target_url=str(scan_in.target_url) if scan_in.target_url else None,
+        )
+        if abuse_decision.action == "BLOCK":
+            await crud.create_scan_activity(
+                db=db,
+                user_id=current_user.id,
+                domain=target_domain,
+                scan_type=scan_in.profile.value,
+                ip_address=client_ip,
+                risk_score=abuse_decision.risk_score,
+                outcome=ActivityOutcome.BLOCKED,
+                reason="ABUSE_RISK_BLOCK",
+                metadata_json={"reasons": abuse_decision.reasons},
+            )
+            raise HTTPException(
+                status_code=403,
+                detail="Scan blocked by abuse protection controls.",
+            )
+        if abuse_decision.action == "THROTTLE":
+            await crud.create_scan_activity(
+                db=db,
+                user_id=current_user.id,
+                domain=target_domain,
+                scan_type=scan_in.profile.value,
+                ip_address=client_ip,
+                risk_score=abuse_decision.risk_score,
+                outcome=ActivityOutcome.THROTTLED,
+                reason="ABUSE_RISK_THROTTLE",
+                metadata_json={"reasons": abuse_decision.reasons},
+            )
+            raise HTTPException(
+                status_code=429,
+                detail="Scan request throttled by abuse protection controls.",
+            )
+    else:
+        abuse_decision = AbuseDecision(risk_score=0, action="ALLOW", reasons=[])
+
+    if is_rate_limiting_enabled():
+        rate_decision = await rate_limiter.evaluate(
+            db=db,
+            user_id=current_user.id,
+            trust_tier=trust_tier,
+            domain=target_domain,
+            profile=scan_in.profile,
+        )
+        if not rate_decision.allowed:
+            await crud.create_scan_activity(
+                db=db,
+                user_id=current_user.id,
+                domain=target_domain,
+                scan_type=scan_in.profile.value,
+                ip_address=client_ip,
+                risk_score=abuse_decision.risk_score,
+                outcome=ActivityOutcome.THROTTLED,
+                reason=rate_decision.reason,
+            )
+            raise HTTPException(
+                status_code=429,
+                detail=f"Scan request throttled: {rate_decision.reason}",
+            )
 
     scheduler = get_scheduler()
     submitter = ScanSubmitter(scheduler)
@@ -154,6 +327,16 @@ async def start_scan(
         )
         db_scan.status = ScanStatus.FAILED
         await db.commit()
+        await crud.create_scan_activity(
+            db=db,
+            user_id=current_user.id,
+            domain=target_domain,
+            scan_type=scan_in.profile.value,
+            ip_address=client_ip,
+            risk_score=abuse_decision.risk_score,
+            outcome=ActivityOutcome.BLOCKED,
+            reason=f"SUBMISSION_REJECTED:{exc.code}",
+        )
         raise HTTPException(
             status_code=exc.status_code,
             detail={
@@ -165,6 +348,16 @@ async def start_scan(
         logger.exception("Scan submission failed")
         db_scan.status = ScanStatus.FAILED
         await db.commit()
+        await crud.create_scan_activity(
+            db=db,
+            user_id=current_user.id,
+            domain=target_domain,
+            scan_type=scan_in.profile.value,
+            ip_address=client_ip,
+            risk_score=abuse_decision.risk_score,
+            outcome=ActivityOutcome.BLOCKED,
+            reason="SUBMISSION_INTERNAL_ERROR",
+        )
         raise HTTPException(
             status_code=500,
             detail={
@@ -172,6 +365,16 @@ async def start_scan(
                 "code": "SCAN_SUBMISSION_INTERNAL_ERROR",
             },
         )
+    await crud.create_scan_activity(
+        db=db,
+        user_id=current_user.id,
+        domain=target_domain,
+        scan_type=scan_in.profile.value,
+        ip_address=client_ip,
+        risk_score=abuse_decision.risk_score,
+        outcome=ActivityOutcome.ALLOWED,
+        reason="SCAN_ACCEPTED",
+    )
     return {
         "scan_id": db_scan.id,
         "job_id": db_scan.id,
