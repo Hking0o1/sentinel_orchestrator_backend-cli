@@ -10,6 +10,7 @@ from app.db.session import engine, AsyncSessionLocal
 from app.db.base import Base
 from app.db import crud
 from app.db import models as db_models  # noqa: F401
+from app.db.schema import ensure_legacy_schema_compatibility
 from app.models import scan as scan_models  # noqa: F401
 from app.models.user import UserCreate
 from engine.scheduler.runtime import (
@@ -82,6 +83,7 @@ async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         logger.info("Initializing database tables")
         await conn.run_sync(Base.metadata.create_all)
+        await ensure_legacy_schema_compatibility(conn)
         logger.info("Database tables initialized")
 
     # -------------------------------------------------

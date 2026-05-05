@@ -25,7 +25,14 @@ async def get_user(db: AsyncSession, user_id: UUID) -> User | None:
 async def create_user(db: AsyncSession, user_in: UserCreate) -> User:
     from app.core.security import get_password_hash
     hashed_password = get_password_hash(user_in.password)
-    db_user = User(email=user_in.email, full_name=user_in.full_name, hashed_password=hashed_password, is_active=user_in.is_active, is_admin=user_in.is_admin)
+    db_user = User(
+        email=user_in.email,
+        full_name=user_in.full_name,
+        hashed_password=hashed_password,
+        is_active=user_in.is_active,
+        is_admin=user_in.is_admin,
+        trust_tier=user_in.trust_tier,
+    )
     db.add(db_user)
     await db.commit()
     await db.refresh(db_user)
